@@ -3,54 +3,100 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>School Billing & Payment System - Multi-Role Portal</title>
+  <title>Torres Capitol College - School Billing & Payment System</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="manifest" href="manifest.json" />
 </head>
 <body>
 
-  <!-- Navigation / Role Switcher -->
-  <header class="no-print">
-    <div class="header-content">
-      <h1>🎓 Torres Capitol College - Billing System</h1>
-      <nav class="role-nav">
-        <button onclick="switchRole('student')" id="navStudent" class="active-role">👤 Student Portal</button>
-        <button onclick="switchRole('cashier')" id="navCashier">💵 Cashier Dashboard</button>
-        <button onclick="switchRole('admin')" id="navAdmin">⚙️ Admin Panel</button>
-      </nav>
-    </div>
-  </header>
-
-  <main class="container">
-
-    <!-- ================= 1. STUDENT PORTAL ================= -->
-    <section id="roleStudent" class="portal-section">
-      <div class="card no-print">
-        <h2>Student Account Lookup</h2>
-        <div class="search-box">
-          <input type="text" id="studentSearchInput" placeholder="Enter Student ID (e.g., 2024-0001)" />
-          <button onclick="searchStudentPortal()">Access Account</button>
-        </div>
+  <!-- AUTH CONTAINER (Shown when not logged in) -->
+  <div id="authContainer" class="auth-container">
+    <div class="auth-card">
+      <h2>🎓 Torres Capitol College</h2>
+      <p class="subtitle">School Billing & Payment System</p>
+      
+      <div class="auth-tabs">
+        <button onclick="switchAuthTab('login')" id="tabLoginBtn" class="active-tab">Login</button>
+        <button onclick="switchAuthTab('register')" id="tabRegisterBtn">Register</button>
       </div>
 
-      <div id="studentDashboardContent" class="hidden">
-        <!-- Statement of Account Card -->
+      <!-- Login Form -->
+      <form id="loginForm" onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label>Student ID or Email</label>
+          <input type="text" id="loginIdentifier" placeholder="e.g., 2024-0001 or student@tcc.edu.ph" required />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="loginPassword" placeholder="••••••••" required />
+        </div>
+        <button type="submit" class="btn-primary full-width">Sign In</button>
+      </form>
+
+      <!-- Register Form -->
+      <form id="registerForm" onsubmit="handleRegister(event)" class="hidden">
+        <div class="form-group">
+          <label>Student ID Number</label>
+          <input type="text" id="regStudentId" placeholder="e.g., 2024-0001" required />
+        </div>
+        <div class="form-group">
+          <label>Full Name</label>
+          <input type="text" id="regFullName" placeholder="Juan Dela Cruz" required />
+        </div>
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" id="regEmail" placeholder="student@tcc.edu.ph" required />
+        </div>
+        <div class="form-group">
+          <label>Year Level</label>
+          <select id="regYearLevel" required>
+            <option value="1">1st Year (₱5,000.00 Base Fee)</option>
+            <option value="2">2nd Year (₱5,500.00 Base Fee)</option>
+            <option value="3">3rd Year (₱6,000.00 Base Fee)</option>
+            <option value="4">4th Year (₱6,500.00 Base Fee)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input type="password" id="regPassword" placeholder="••••••••" required />
+        </div>
+        <button type="submit" class="btn-primary full-width">Submit Registration</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- MAIN APP CONTAINER (Shown after login) -->
+  <div id="appContainer" class="hidden">
+    <header class="no-print">
+      <div class="header-content">
+        <h1>🎓 TCC Billing System</h1>
+        <div class="header-right">
+          <span id="userInfoDisplay" class="user-badge"></span>
+          <nav class="role-nav" id="roleNav">
+            <!-- Dynamically populated based on role -->
+          </nav>
+          <button onclick="handleLogout()" class="btn-danger-outline">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <!-- STUDENT PORTAL -->
+      <section id="roleStudent" class="portal-section">
         <div class="card" id="soaPrintArea">
-          <div class="flex-between">
+          <div class="flex-between" style="margin-bottom: 1rem;">
             <h2>Statement of Account (SOA)</h2>
-            <button onclick="printSOA()" class="btn-secondary no-print">🖨️ Print SOA</button>
+            <button onclick="window.print()" class="btn-secondary no-print">🖨️ Print SOA / Save PDF</button>
           </div>
+
           <div class="info-grid">
             <p><strong>Student ID:</strong> <span id="sId"></span></p>
             <p><strong>Full Name:</strong> <span id="sName"></span></p>
-            <p><strong>Course & Year:</strong> <span id="sCourse"></span></p>
+            <p><strong>Status:</strong> <span id="sStatus" class="text-success">Approved</span></p>
           </div>
 
           <table class="fee-table">
-            <tr><th>Description / Bill Item</th><th>Amount</th><th>Status</th></tr>
-            <tbody id="sBillsTableBody">
-              <!-- Dynamically populated bills -->
-            </tbody>
+            <tr><th>Description / Bill Item</th><th>Amount</th><th>Status</th><th>Due Date</th></tr>
+            <tbody id="sBillsTableBody"></tbody>
           </table>
 
           <table class="fee-table" style="margin-top: 1rem;">
@@ -58,14 +104,14 @@
           </table>
         </div>
 
-        <!-- Payment Submission / GCash / Bank / BO -->
+        <!-- Payment Submission -->
         <div class="card no-print">
-          <h2>Submit Payment / Reference</h2>
-          <form id="studentPaymentForm" onsubmit="submitStudentPayment(event)">
+          <h2>Submit Online Payment / Reference</h2>
+          <form id="studentPaymentForm" onsubmit="submitStudentPayment(event)" class="payment-form-grid">
             <div class="form-group">
               <label>Select Bill to Pay</label>
               <select id="spBillSelect" required>
-                <option value="">-- Choose Bill --</option>
+                <option value="">-- Choose Unpaid Bill --</option>
               </select>
             </div>
             <div class="form-group">
@@ -76,74 +122,85 @@
               <label>Payment Channel</label>
               <select id="spChannel" required>
                 <option value="GCash">GCash Transfer</option>
-                <option value="Bank Transfer">Bank Transfer (Landbank/BPI)</option>
-                <option value="Business Office (BO)">Over-the-Counter (Business Office)</option>
+                <option value="Bank Transfer">Bank Transfer (Landbank / BPI)</option>
+                <option value="Business Office">Over-the-Counter (Business Office)</option>
               </select>
             </div>
-            <button type="submit" class="btn-primary">Submit Payment Reference</button>
+            <button type="submit" class="btn-primary" style="grid-column: span 2;">Submit Payment Reference</button>
           </form>
         </div>
 
         <!-- Payment History -->
         <div class="card">
-          <h2>Student Payment History</h2>
+          <h2>Payment History & Receipts</h2>
           <table class="fee-table" id="studentHistoryTable">
             <tr><th>Date</th><th>Method</th><th>Amount Paid</th></tr>
             <tr><td colspan="3" style="text-align: center; color: #64748b;">No payment history found.</td></tr>
           </table>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ================= 2. CASHIER DASHBOARD ================= -->
-    <section id="roleCashier" class="portal-section hidden">
-      <div class="card">
-        <h2>Cashier Transaction Window</h2>
-        <p class="subtitle">Record counter payments and generate official receipts.</p>
-        
-        <form id="cashierForm" onsubmit="processCashierPayment(event)" class="payment-form-grid">
-          <div class="form-group">
-            <label>Student ID (User ID)</label>
-            <input type="text" id="cStudentId" placeholder="Enter student user ID" required />
-          </div>
-          <div class="form-group">
-            <label>Bill ID</label>
-            <input type="number" id="cBillId" placeholder="Bill ID to apply payment" required />
-          </div>
-          <div class="form-group">
-            <label>Amount Received (₱)</label>
-            <input type="number" id="cAmount" step="0.01" placeholder="0.00" required />
-          </div>
-          <div class="form-group">
-            <label>Payment Mode</label>
-            <select id="cMethod" required>
-              <option value="cash">Cash (BO Counter)</option>
-              <option value="gcash">GCash</option>
-              <option value="bank">Bank Transfer</option>
-            </select>
-          </div>
-          <button type="submit" class="btn-primary" style="grid-column: span 2;">Process Payment & Email Receipt</button>
-        </form>
-      </div>
-    </section>
+      <!-- CASHIER DASHBOARD -->
+      <section id="roleCashier" class="portal-section hidden">
+        <div class="card">
+          <h2>Cashier Transaction Window</h2>
+          <p class="subtitle">Record counter payments and generate official receipts.</p>
+          
+          <form id="cashierForm" onsubmit="processCashierPayment(event)" class="payment-form-grid">
+            <div class="form-group">
+              <label>Student User ID</label>
+              <input type="number" id="cStudentId" placeholder="e.g., 1" required />
+            </div>
+            <div class="form-group">
+              <label>Bill ID</label>
+              <input type="number" id="cBillId" placeholder="Bill ID to apply payment" required />
+            </div>
+            <div class="form-group">
+              <label>Amount Received (₱)</label>
+              <input type="number" id="cAmount" step="0.01" placeholder="0.00" required />
+            </div>
+            <div class="form-group">
+              <label>Payment Mode</label>
+              <select id="cMethod" required>
+                <option value="cash">Cash (BO Counter)</option>
+                <option value="gcash">GCash</option>
+                <option value="bank">Bank Transfer</option>
+              </select>
+            </div>
+            <button type="submit" class="btn-primary" style="grid-column: span 2;">Process Payment & Email Receipt</button>
+          </form>
+        </div>
+      </section>
 
-    <!-- ================= 3. ADMIN PANEL ================= -->
-    <section id="roleAdmin" class="portal-section hidden">
-      <div class="card">
-        <h2>Admin Management Panel</h2>
-        <p class="subtitle">Issue new assessment bills or violation fees to students.</p>
-        
-        <form id="adminAddBillForm" onsubmit="addNewBill(event)" class="payment-form-grid">
-          <div class="form-group"><label>Student User ID</label><input type="number" id="abStudentId" placeholder="1" required /></div>
-          <div class="form-group"><label>Fee Title / Description</label><input type="text" id="abTitle" placeholder="Laboratory Fee" required /></div>
-          <div class="form-group"><label>Amount (₱)</label><input type="number" id="abAmount" step="0.01" placeholder="1500.00" required /></div>
-          <div class="form-group"><label>Due Date</label><input type="date" id="abDueDate" required /></div>
-          <button type="submit" class="btn-primary" style="grid-column: span 2;">Issue Bill</button>
-        </form>
-      </div>
-    </section>
-
-  </main>
+      <!-- ADMIN PANEL -->
+      <section id="roleAdmin" class="portal-section hidden">
+        <div class="card">
+          <h2>Admin Management Panel</h2>
+          <p class="subtitle">Issue new assessment bills, miscellaneous fees, or penalties to students.</p>
+          
+          <form id="adminAddBillForm" onsubmit="addNewBill(event)" class="payment-form-grid">
+            <div class="form-group">
+              <label>Student User ID</label>
+              <input type="number" id="abStudentId" placeholder="e.g., 1" required />
+            </div>
+            <div class="form-group">
+              <label>Fee Title / Description</label>
+              <input type="text" id="abTitle" placeholder="Laboratory Fee / Uniform Fee" required />
+            </div>
+            <div class="form-group">
+              <label>Amount (₱)</label>
+              <input type="number" id="abAmount" step="0.01" placeholder="1500.00" required />
+            </div>
+            <div class="form-group">
+              <label>Due Date</label>
+              <input type="date" id="abDueDate" required />
+            </div>
+            <button type="submit" class="btn-primary" style="grid-column: span 2;">Issue Assessment Bill</button>
+          </form>
+        </div>
+      </section>
+    </main>
+  </div>
 
   <!-- Official Receipt Modal -->
   <div id="receiptModal" class="modal hidden">
