@@ -38,10 +38,10 @@ const orNo = (id) => 'OR-' + String(id).padStart(5, '0');
 const fail = (res, err, code = 500) => res.status(code).json({ success: false, error: err && err.message ? err.message : String(err) });
 
 const YEAR_LEVEL_FEES = {
-  1: { amount: 5000.0, title: '1st Year Base Tuition & Unit Fees' },
-  2: { amount: 5500.0, title: '2nd Year Base Tuition & Unit Fees' },
-  3: { amount: 6000.0, title: '3rd Year Base Tuition & Unit Fees' },
-  4: { amount: 6500.0, title: '4th Year Base Tuition & Unit Fees' }
+  1: { amount: 20000.0, title: '1st Year Base Tuition & Unit Fees' },
+  2: { amount: 18000.0, title: '2nd Year Base Tuition & Unit Fees' },
+  3: { amount: 16000.0, title: '3rd Year Base Tuition & Unit Fees' },
+  4: { amount: 14000.0, title: '4th Year Base Tuition & Unit Fees' }
 };
 
 // Bills are due at exam periods of the active semester, not on a free-form date.
