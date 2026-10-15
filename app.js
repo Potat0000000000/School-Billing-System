@@ -1,7 +1,9 @@
 // Replace with your Supabase Credentials
 const SUPABASE_URL = 'https://nioslrneolhxabagfg.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_xbrggnfb6ib-tEtWPZT7Mw_TuBHtZCu';
-const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// FIX: Access createClient from the global supabase object loaded via CDN
+const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let currentStudent = null;
 
@@ -16,14 +18,15 @@ searchBtn.addEventListener('click', async () => {
   const query = searchInput.value.trim();
   if (!query) return alert('Please enter a Student ID');
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from('students')
     .select('*')
     .eq('student_id', query)
     .single();
 
   if (error || !data) {
-    alert('Student not found!');
+    console.error('Database Error:', error);
+    alert('Student not found! Check console for details.');
     accountSection.classList.add('hidden');
     return;
   }
@@ -62,7 +65,7 @@ paymentForm.addEventListener('submit', async (e) => {
   const generatedOR = 'OR-' + Math.floor(100000 + Math.random() * 900000);
 
   // Update Student Paid Balance
-  const { error: updateErr } = await supabase
+  const { error: updateErr } = await supabaseClient
     .from('students')
     .update({ total_paid: newTotalPaid })
     .eq('student_id', currentStudent.student_id);
@@ -70,7 +73,7 @@ paymentForm.addEventListener('submit', async (e) => {
   if (updateErr) return alert('Failed to update payment record.');
 
   // Log Transaction
-  await supabase.from('transactions').insert([{
+  await supabaseClient.from('transactions').insert([{
     or_number: generatedOR,
     student_id: currentStudent.student_id,
     amount_paid: payAmount,
