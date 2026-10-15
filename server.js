@@ -4,12 +4,13 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const path = require('path'); // <-- Add this
 require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public'))); // <-- Update this line
 
 const JWT_SECRET = process.env.JWT_SECRET || 'school_billing_super_secret_key_2026';
 
