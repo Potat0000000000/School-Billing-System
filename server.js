@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -262,7 +263,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 
     const feeTypes = await client.query(
-      `SELECT fee_type_id FROM fee_types ORDER BY (name ILIKE 'tuition') DESC, fee_type_id LIMIT 1`
+      `SELECT fee_type_id FROM fee_types ORDER BY (name ILIKE 'tuition%') DESC, fee_type_id LIMIT 1`
     );
     if (!feeTypes.rows.length) {
       await client.query('ROLLBACK');
@@ -361,6 +362,117 @@ app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
     res.json({ success: true, message: 'Password updated.' });
   } catch (err) {
     fail(res, err);
+  }
+});
+
+// ==========================================
+// FORGOT / RESET PASSWORD (email link, 30 minutes, single use)
+// ==========================================
+const RESET_MINUTES = 30;
+const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const RESET_SENT_MSG = 'If that Student ID or email matches an account, a reset link has been sent to the email on file. Check your inbox and spam folder.';
+
+// Never build the link from the Host header (a forged Host would send the token to an attacker).
+// Set APP_URL in Vercel (e.g. https://your-app.vercel.app). Vercel's own production URL is the fallback.
+const appBase = () =>
+  (process.env.APP_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : `http://localhost:${process.env.PORT || 3000}`)
+  ).replace(/\/$/, '');
+
+async function sendResetEmail(to, name, link) {
+  if (!transporter || !to) return false;
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #e3e6eb;border-radius:8px;overflow:hidden">
+      <div style="background:#0e2238;color:#fff;padding:20px 24px">
+        <div style="font-size:18px;font-weight:bold">Torres Capitol College</div>
+        <div style="font-size:13px;opacity:.8">Billing & Payments · Password reset</div>
+      </div>
+      <div style="padding:24px;font-size:14px;line-height:1.5;color:#1a2533">
+        <p>Hi <strong>${esc(name)}</strong>,</p>
+        <p>We received a request to reset your password. Click the button below to choose a new one. This link works once and expires in ${RESET_MINUTES} minutes.</p>
+        <p style="margin:24px 0"><a href="${esc(link)}" style="background:#0e2238;color:#fff;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block">Reset my password</a></p>
+        <p style="font-size:12px;color:#64707f">If the button does not work, copy this link into your browser:<br>${esc(link)}</p>
+        <p style="font-size:12px;color:#64707f">If you did not ask for this, ignore this email. Your password stays the same.</p>
+      </div>
+    </div>`;
+  try {
+    await transporter.sendMail({ from: `"TCC Billing Office" <${process.env.EMAIL_USER}>`, to, subject: 'Reset your TCC Billing password', html });
+    return true;
+  } catch (err) {
+    console.error('Reset email error:', err.message);
+    return false;
+  }
+}
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const loginId = String(req.body.identifier || '').trim();
+  if (!loginId) return res.status(400).json({ success: false, error: 'Enter your Student ID or email.' });
+  if (!transporter) {
+    return res.status(503).json({ success: false, error: 'Password reset by email is not set up yet. Please ask the Business Office to reset your password.' });
+  }
+  const key = `forgot|${req.ip}`;
+  if (tooMany(key)) return res.status(429).json({ success: false, error: 'Too many requests. Try again in 15 minutes.' });
+  noteFail(key);
+
+  try {
+    const u = (await db.query(
+      `SELECT user_id, full_name, email FROM users WHERE (LOWER(email) = LOWER($1) OR student_or_emp_id = $1) AND status = 'approved'`,
+      [loginId]
+    )).rows[0];
+    if (u) {
+      const recent = await db.query(
+        `SELECT COUNT(*) AS n FROM password_resets WHERE user_id = $1 AND created_at > now() - interval '15 minutes'`,
+        [u.user_id]
+      );
+      if (parseInt(recent.rows[0].n) < 3) {
+        const raw = crypto.randomBytes(32).toString('hex');
+        await db.query(
+          `INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`,
+          [u.user_id, sha256(raw)]
+        );
+        await sendResetEmail(u.email, u.full_name, `${appBase()}/?reset=${raw}`);
+        await audit(u.user_id, 'password.reset_request', 'Requested a password reset link');
+      }
+    }
+    // Same answer whether or not the account exists, so this can't be used to find valid IDs.
+    res.json({ success: true, message: RESET_SENT_MSG });
+  } catch (err) {
+    console.error('Forgot password error:', err);
+    fail(res, err);
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, new_password } = req.body;
+  if (!token || typeof token !== 'string') return res.status(400).json({ success: false, error: 'This reset link is not valid.' });
+  if (!new_password || new_password.length < 6) return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+  const key = `reset|${req.ip}`;
+  if (tooMany(key)) return res.status(429).json({ success: false, error: 'Too many attempts. Try again in 15 minutes.' });
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    // Claim the token atomically so it can only be used once.
+    const claim = (await client.query(
+      `UPDATE password_resets SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now() RETURNING user_id`,
+      [sha256(token)]
+    )).rows[0];
+    if (!claim) {
+      await client.query('ROLLBACK');
+      noteFail(key);
+      return res.status(400).json({ success: false, error: 'This reset link is invalid or has expired. Request a new one.' });
+    }
+    await client.query(`UPDATE users SET password = $1 WHERE user_id = $2`, [await bcrypt.hash(new_password, 10), claim.user_id]);
+    await client.query(`UPDATE password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL`, [claim.user_id]);
+    await client.query('COMMIT');
+    await audit(claim.user_id, 'password.reset', 'Password reset using an emailed link');
+    res.json({ success: true, message: 'Password updated. You can sign in now.' });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    console.error('Reset password error:', err);
+    fail(res, err);
+  } finally {
+    client.release();
   }
 });
 
@@ -835,11 +947,11 @@ app.post('/api/admin/users/:id/password', ...adminOnly, async (req, res) => {
 
 // ---- Fee types ----
 app.post('/api/admin/fee-types', ...adminOnly, async (req, res) => {
-  const { name, default_amount } = req.body;
+  const { name, default_amount, description } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Enter a fee name.' });
   const amt = default_amount === '' || default_amount == null ? null : parseFloat(default_amount);
   try {
-    await db.query(`INSERT INTO fee_types (name, default_amount) VALUES ($1, $2)`, [name.trim(), amt]);
+    await db.query(`INSERT INTO fee_types (name, default_amount, description) VALUES ($1, $2, $3)`, [name.trim(), amt, (description || '').trim() || null]);
     await audit(req.user.user_id, 'fee_type.create', name.trim());
     res.json({ success: true, message: 'Fee type added.' });
   } catch (err) {
@@ -848,11 +960,11 @@ app.post('/api/admin/fee-types', ...adminOnly, async (req, res) => {
 });
 
 app.put('/api/admin/fee-types/:id', ...adminOnly, async (req, res) => {
-  const { name, default_amount } = req.body;
+  const { name, default_amount, description } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Enter a fee name.' });
   const amt = default_amount === '' || default_amount == null ? null : parseFloat(default_amount);
   try {
-    await db.query(`UPDATE fee_types SET name = $1, default_amount = $2 WHERE fee_type_id = $3`, [name.trim(), amt, req.params.id]);
+    await db.query(`UPDATE fee_types SET name = $1, default_amount = $2, description = $3 WHERE fee_type_id = $4`, [name.trim(), amt, (description || '').trim() || null, req.params.id]);
     await audit(req.user.user_id, 'fee_type.update', name.trim());
     res.json({ success: true, message: 'Fee type updated.' });
   } catch (err) {

@@ -1,5 +1,5 @@
-const CACHE = 'tcc-billing-v2';
-const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/icon.svg'];
+const CACHE = 'tcc-billing-v3';
+const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/logo.png', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
@@ -14,7 +14,7 @@ self.addEventListener('activate', (e) => {
 // Network first so updates show up; cache is only an offline fallback. API calls are never cached.
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/') || url.searchParams.has('reset')) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

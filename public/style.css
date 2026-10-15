@@ -254,3 +254,9 @@ tfoot td { font-weight: 600; background: color-mix(in srgb, var(--paper) 60%, va
   .receipt { border: 1px solid #999; }
   @page { margin: 14mm; }
 }
+/* Logo image (replaces the text crest) */
+.logo { display: block; height: 120px; width: auto; }
+.logo.sm { height: 40px; flex: none; }
+.forgot-row { text-align: right; margin: -.25rem 0 1rem; font-size: .88rem; }
+.auth-back { text-align: center; margin-top: 1rem; font-size: .9rem; }
+@media (max-width: 860px) { .auth-brand .logo { height: 84px; } }

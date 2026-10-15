@@ -125,15 +125,38 @@ function toggleTheme() {
 // ---------- boot & auth ----------
 document.addEventListener('DOMContentLoaded', () => {
   $('themeBtn').textContent = document.documentElement.dataset.theme === 'dark' ? '☀' : '☾';
-  if (token && me) showApp(); else showAuth();
+  const resetToken = new URLSearchParams(location.search).get('reset');
+  if (resetToken) {
+    RESET_TOKEN = resetToken;
+    history.replaceState(null, '', location.pathname); // keep the token out of the address bar
+    handleLogout();
+    switchAuthTab('reset');
+  } else if (token && me) showApp(); else showAuth();
 });
 
 function switchAuthTab(tab) {
-  const login = tab === 'login';
-  $('loginForm').classList.toggle('hidden', !login);
-  $('registerForm').classList.toggle('hidden', login);
-  $('tabLogin').classList.toggle('on', login);
-  $('tabRegister').classList.toggle('on', !login);
+  const panes = { login: 'loginForm', register: 'registerForm', forgot: 'forgotForm', reset: 'resetForm' };
+  Object.entries(panes).forEach(([k, id]) => $(id).classList.toggle('hidden', k !== tab));
+  $('authSeg').classList.toggle('hidden', tab === 'forgot' || tab === 'reset');
+  $('tabLogin').classList.toggle('on', tab === 'login');
+  $('tabRegister').classList.toggle('on', tab === 'register');
+}
+
+// Password reset: the emailed link opens the site as /?reset=TOKEN
+let RESET_TOKEN = '';
+async function doForgot(fd, form) {
+  const r = await post('/api/auth/forgot-password', { identifier: fd.get('identifier').trim() });
+  toast(r.message);
+  form.reset();
+  switchAuthTab('login');
+}
+async function doReset(fd, form) {
+  if (fd.get('new_password') !== fd.get('confirm_password')) throw new Error('The two passwords do not match.');
+  const r = await post('/api/auth/reset-password', { token: RESET_TOKEN, new_password: fd.get('new_password') });
+  RESET_TOKEN = '';
+  form.reset();
+  toast(r.message);
+  switchAuthTab('login');
 }
 
 async function doLogin(fd, form) {
@@ -612,7 +635,7 @@ async function openIssueBill() {
     body: `<p class="muted" style="margin-bottom:1rem">For ${esc(S.acctData.student.full_name)}</p>
       <form onsubmit="submitForm(event, doIssueBill)"><input type="hidden" name="user_id" value="${S.acct}" />
         <label class="field"><span>Fee type</span><select name="fee_type_id" onchange="feePick(this)" required>
-          <option value="">Choose a fee type</option>${S.meta.fee_types.map((f) => `<option value="${f.fee_type_id}" data-amt="${f.default_amount ?? ''}" data-name="${esc(f.name)}">${esc(f.name)}</option>`).join('')}</select></label>
+          <option value="">Choose a fee type</option>${S.meta.fee_types.map((f) => `<option value="${f.fee_type_id}" data-amt="${f.default_amount ?? ''}" data-name="${esc(f.name)}">${esc(f.name)}${f.description ? ' — ' + esc(f.description) : ''}</option>`).join('')}</select></label>
         <label class="field"><span>Description</span><input name="title" id="ibTitle" placeholder="e.g. Late library return" required /></label>
         <label class="field"><span>Amount (₱)</span><input name="amount" id="ibAmount" type="number" step="0.01" min="0.01" required /></label>
         <label class="field"><span>Due at</span><select name="due_period">${Object.entries(PERIODS).map(([k, v]) => `<option value="${k}" ${k === 'finals' ? 'selected' : ''}>${v}${t ? ' — ' + fmtDate(t[k]) : ''}</option>`).join('')}</select>
@@ -789,7 +812,7 @@ VIEWS.setup = async function () {
 
     <section class="panel"><div class="panel-head"><div><h3>Fee types</h3><p>The default amount fills in automatically when a cashier issues a bill.</p></div><button class="btn primary" onclick="openFeeForm()">Add fee type</button></div>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th class="right">Default amount</th><th></th></tr></thead>
-      <tbody>${m.fee_types.length ? m.fee_types.map((f) => `<tr><td>${esc(f.name)}</td><td class="num right">${f.default_amount != null ? peso(f.default_amount) : '—'}</td>
+      <tbody>${m.fee_types.length ? m.fee_types.map((f) => `<tr><td>${esc(f.name)}${f.description ? `<small>${esc(f.description)}</small>` : ''}</td><td class="num right">${f.default_amount != null ? peso(f.default_amount) : '—'}</td>
         <td class="right"><div class="row-actions" style="justify-content:flex-end"><button class="btn sm" onclick="openFeeForm(${f.fee_type_id})">Edit</button><button class="btn sm danger" onclick="deleteFee(${f.fee_type_id})">Delete</button></div></td></tr>`).join('')
         : `<tr><td colspan="3" class="empty">No fee types yet.</td></tr>`}</tbody></table></div></section>
 
@@ -829,17 +852,18 @@ async function activateTerm(id) {
 }
 
 function openFeeForm(id) {
-  const f = id ? S.meta.fee_types.find((x) => x.fee_type_id === id) : { name: '', default_amount: '' };
+  const f = id ? S.meta.fee_types.find((x) => x.fee_type_id === id) : { name: '', default_amount: '', description: '' };
   openModal({
     title: id ? 'Edit fee type' : 'Add fee type',
     body: `<form onsubmit="submitForm(event, doFee)"><input type="hidden" name="id" value="${id || ''}" />
       <label class="field"><span>Name</span><input name="name" value="${esc(f.name)}" placeholder="e.g. Laboratory" required /></label>
+      <label class="field"><span>Description <small>(optional)</small></span><input name="description" value="${esc(f.description || '')}" placeholder="e.g. Lab and library usage" /></label>
       <label class="field"><span>Default amount (₱) <small>(optional)</small></span><input name="default_amount" type="number" step="0.01" min="0" value="${f.default_amount ?? ''}" /></label>
       ${formFoot('Save')}</form>`
   });
 }
 async function doFee(fd) {
-  const body = { name: fd.get('name'), default_amount: fd.get('default_amount') };
+  const body = { name: fd.get('name'), default_amount: fd.get('default_amount'), description: fd.get('description') };
   const id = fd.get('id');
   const r = id ? await api(`/api/admin/fee-types/${id}`, { method: 'PUT', body: JSON.stringify(body) }) : await post('/api/admin/fee-types', body);
   closeModal(); toast(r.message); refresh();
