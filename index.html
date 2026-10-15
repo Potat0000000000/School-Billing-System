@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>School Billing & Payment System</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Supabase JS Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+  <header class="no-print">
+    <h1>🎓 School Billing System</h1>
+    <p>Student Accounts & Official Receipt Portal</p>
+  </header>
+
+  <main class="container no-print">
+    <!-- Student Search Section -->
+    <section class="card">
+      <h2>Search Student</h2>
+      <div class="search-box">
+        <input type="text" id="searchInput" placeholder="Enter Student ID (e.g., 2024-0001)" />
+        <button id="searchBtn">Search</button>
+      </div>
+    </section>
+
+    <!-- Student Details & Statement of Account -->
+    <section id="accountSection" class="card hidden">
+      <h2>Statement of Account</h2>
+      <div class="info-grid">
+        <p><strong>Student ID:</strong> <span id="lblStudentId"></span></p>
+        <p><strong>Name:</strong> <span id="lblName"></span></p>
+        <p><strong>Course & Year:</strong> <span id="lblCourse"></span></p>
+      </div>
+
+      <table class="fee-table">
+        <tr><th>Tuition Fee</th><td id="lblTuition">₱0.00</td></tr>
+        <tr><th>Miscellaneous Fee</th><td id="lblMisc">₱0.00</td></tr>
+        <tr><th>Total Assessment</th><td id="lblTotal">₱0.00</td></tr>
+        <tr><th>Total Paid</th><td id="lblPaid" class="text-success">₱0.00</td></tr>
+        <tr class="highlight"><th>Remaining Balance</th><td id="lblBalance" class="text-danger">₱0.00</td></tr>
+      </table>
+
+      <h3>Process Payment</h3>
+      <form id="paymentForm" class="payment-form">
+        <input type="number" id="payAmount" placeholder="Amount to Pay (₱)" step="0.01" required />
+        <select id="payMethod" required>
+          <option value="Cash">Cash</option>
+          <option value="GCash">GCash</option>
+          <option value="Bank Transfer">Bank Transfer</option>
+        </select>
+        <button type="submit" class="btn-primary">Submit Payment</button>
+      </form>
+    </section>
+  </main>
+
+  <!-- Official Receipt Print Modal -->
+  <div id="receiptModal" class="modal hidden">
+    <div class="receipt-box" id="printableReceipt">
+      <div class="receipt-header">
+        <h2>OFFICIAL RECEIPT</h2>
+        <p>School Management System</p>
+        <hr />
+      </div>
+      <div class="receipt-body">
+        <p><strong>OR No:</strong> <span id="rcptOR"></span></p>
+        <p><strong>Date:</strong> <span id="rcptDate"></span></p>
+        <p><strong>Student Name:</strong> <span id="rcptName"></span></p>
+        <p><strong>Student ID:</strong> <span id="rcptId"></span></p>
+        <hr />
+        <p><strong>Amount Paid:</strong> <span id="rcptAmount"></span></p>
+        <p><strong>Payment Method:</strong> <span id="rcptMethod"></span></p>
+        <p><strong>Remaining Balance:</strong> <span id="rcptBalance"></span></p>
+      </div>
+      <div class="receipt-footer no-print">
+        <button onclick="window.print()" class="btn-print">🖨️ Print / Save PDF</button>
+        <button onclick="closeModal()" class="btn-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
