@@ -1122,7 +1122,7 @@ const userChip = (s) => ({ approved: '<span class="chip ok">Active</span>', pend
 
 VIEWS.users = function () {
   setView(`<section class="panel">
-    <div class="panel-head"><div><h3>Users & staff</h3><p>Create cashier or admin accounts, reset passwords, and deactivate accounts.</p></div><button class="btn primary" onclick="openStaffForm()">Add staff account</button></div>
+    <div class="panel-head"><div><h3>Users & staff</h3><p>Create cashier or admin accounts, reset passwords, and deactivate accounts.</p></div><div class="row-actions"><button class="btn" onclick="openTestEmail()">Send test email</button><button class="btn primary" onclick="openStaffForm()">Add staff account</button></div></div>
     <form class="filters" onsubmit="event.preventDefault();loadUsers()">
       <label class="field"><span>Role</span><select id="uRole" onchange="loadUsers()"><option value="">Everyone</option><option value="student">Students</option><option value="cashier">Cashiers</option><option value="admin">Admins</option></select></label>
       <label class="field" style="flex:2"><span>Search</span><input id="uQ" placeholder="Name, ID or email" /></label>
@@ -1143,6 +1143,21 @@ async function loadUsers() {
         ${u.user_id !== me.user_id && u.status === 'rejected' ? `<button class="btn sm" onclick="setUserStatus(${u.user_id},'approved')">Activate</button>` : ''}</div></td></tr>`).join('')
       : `<tr><td colspan="6" class="empty">No users found.</td></tr>`}</tbody></table></div>`;
 }
+function openTestEmail() {
+  openModal({
+    title: 'Send test email',
+    body: `<p class="muted">Checks that the Gmail settings work. If it fails, the exact reason is shown.</p>
+      <form onsubmit="submitForm(event, doTestEmail)">
+        <label class="field"><span>Send to</span><input name="to" type="email" value="${esc(me.email || '')}" placeholder="you@gmail.com" required /></label>
+        ${formFoot('Send test')}</form>`
+  });
+}
+async function doTestEmail(fd) {
+  const r = await post('/api/admin/test-email', { to: fd.get('to') });
+  closeModal();
+  toast(r.message);
+}
+
 function openStaffForm() {
   openModal({
     title: 'Add staff account',

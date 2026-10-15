@@ -291,3 +291,6 @@ tfoot td { font-weight: 600; background: color-mix(in srgb, var(--paper) 60%, va
 .assess-total .remaining dt { font-weight: 600; color: var(--ink); }
 .assess-total .remaining dd { font-family: var(--serif); font-size: 1.6rem; font-weight: 600; color: var(--bad); }
 .assess-total .remaining dd.clear { color: var(--ok); }
+
+/* ---------- sign-in page motto ---------- */
+.auth-lede.motto { font-size: 1.6rem; font-style: italic; letter-spacing: .01em; color: #d6a54a; max-width: none; }
