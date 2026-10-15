@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>School Billing & Payment System</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="manifest" href="manifest.json" />
   <!-- Supabase JS Client -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
@@ -52,6 +53,20 @@
         </select>
         <button type="submit" class="btn-primary">Submit Payment</button>
       </form>
+    </section>
+
+    <!-- Recent Transactions Log -->
+    <section class="card">
+      <h2>Recent Transactions</h2>
+      <table class="fee-table" id="transactionTable">
+        <tr>
+          <th>OR Number</th>
+          <th>Student ID</th>
+          <th>Amount</th>
+          <th>Method</th>
+        </tr>
+        <tr><td colspan="4" style="text-align: center; color: #64748b;">No transactions recorded yet.</td></tr>
+      </table>
     </section>
   </main>
 
