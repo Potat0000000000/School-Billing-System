@@ -87,6 +87,12 @@ button:hover { background: #1d4ed8; }
 .btn-secondary { background: #64748b; }
 .btn-secondary:hover { background: #475569; }
 
+.flex-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
 .info-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -110,7 +116,6 @@ button:hover { background: #1d4ed8; }
 }
 
 .fee-table th { background: #f8fafc; }
-.highlight-row { font-weight: bold; background: #eff6ff; }
 .highlight { font-weight: bold; font-size: 1.1rem; }
 .text-success { color: #16a34a; font-weight: bold; }
 .text-danger { color: #dc2626; font-weight: bold; }
