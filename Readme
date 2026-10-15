@@ -1,0 +1,22 @@
+# TCC Billing – Android app (WebView)
+
+This is a thin app that opens your deployed site (set in `MainActivity.java`, `START_URL`).
+Because it just shows the live site, every website update shows up in the app automatically.
+You only rebuild the app if you change this Android code or the site address.
+
+## Build the APK
+1. Install Android Studio (it includes everything else, including the JDK).
+2. File > Open > choose this `android-app` folder. Let Gradle sync finish
+   (accept any "install missing SDK 34" or "upgrade plugin" prompts).
+3. Build > Build Bundle(s) / APK(s) > Build APK(s).
+4. When it finishes, click "locate". The file is `app/build/outputs/apk/debug/app-debug.apk`.
+5. Copy it to the phone and tap it to install (allow "install unknown apps" when asked).
+
+Needs Android 10 or newer.
+
+## What works inside the app
+- Sign in stays remembered, same as the website.
+- Receipt PDFs and CSV exports are saved to **Downloads/TCC Billing** on the phone.
+- The back button goes back, then asks to press again to exit.
+- If there is no internet, a "Try again" screen shows.
+- The Print buttons are turned off inside the app (Android WebView cannot print). Use Download PDF.

@@ -49,6 +49,7 @@
           </label>
           <p class="forgot-row"><button type="button" class="link-btn" onclick="switchAuthTab('forgot')">Forgot password?</button></p>
           <button class="btn primary block" type="submit">Sign in</button>
+          <p class="auth-back"><button type="button" class="link-btn hidden js-install" onclick="installApp()">Install this as an app</button></p>
         </form>
 
         <form id="forgotForm" class="hidden" onsubmit="submitForm(event, doForgot)">
@@ -117,6 +118,7 @@
       <header class="top">
         <button class="icon-btn menu-btn" onclick="toggleSide(true)" aria-label="Open menu">☰</button>
         <h1 id="pageTitle"></h1>
+        <button class="btn sm hidden js-install" onclick="installApp()">Install app</button>
         <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode"></button>
       </header>
       <main id="view" class="view"></main>

@@ -2,6 +2,8 @@
   "name": "Torres Capitol College Billing & Payments",
   "short_name": "TCC Billing",
   "description": "School billing and payment portal",
+  "id": "/",
+  "lang": "en-PH",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

@@ -51,6 +51,103 @@ const ICON = {
   log: '<path d="M4 4h16v16H4z M8 9h8 M8 13h8 M8 17h5"/>'
 };
 
+// =====================================================
+// SAVING FILES (receipt PDFs, CSV)
+//  1. Inside the Android app  -> Downloads/TCC Billing (via the app's bridge)
+//  2. Staff on desktop Chrome/Edge -> straight into the receipts folder they chose once
+//  3. Everyone else           -> normal browser download
+// =====================================================
+const idbOpen = () => new Promise((res, rej) => {
+  const q = indexedDB.open('tcc-billing', 1);
+  q.onupgradeneeded = () => q.result.createObjectStore('kv');
+  q.onsuccess = () => res(q.result);
+  q.onerror = () => rej(q.error);
+});
+async function idbGet(k) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => { const r = db.transaction('kv').objectStore('kv').get(k); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+}
+async function idbSet(k, v) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => { const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+
+let rcptDir = null;
+const canPickFolder = () => !!window.showDirectoryPicker && !window.AndroidBridge && me && me.role !== 'student';
+
+async function pickReceiptsFolder() {
+  // The browser will not let a website choose a path by itself, so the cashier picks the folder once.
+  const dir = await window.showDirectoryPicker({ id: 'tcc-receipts', mode: 'readwrite', startIn: 'desktop' });
+  rcptDir = dir;
+  try { await idbSet('receiptsDir', dir); } catch (e) { /* still works for this session */ }
+  return dir;
+}
+async function receiptsDir() {
+  let dir = rcptDir;
+  if (!dir) { try { dir = await idbGet('receiptsDir'); } catch (e) {} }
+  if (dir) {
+    let perm = await dir.queryPermission({ mode: 'readwrite' });
+    if (perm !== 'granted') perm = await dir.requestPermission({ mode: 'readwrite' });
+    if (perm === 'granted') { rcptDir = dir; return dir; }
+  }
+  return pickReceiptsFolder();
+}
+
+async function saveBlob(blob, filename, { receipt = false } = {}) {
+  if (window.AndroidBridge) {
+    const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+    window.AndroidBridge.saveFile(b64, filename, blob.type || 'application/octet-stream');
+    return;
+  }
+  if (receipt && canPickFolder()) {
+    try {
+      const dir = await receiptsDir();
+      const w = await (await dir.getFileHandle(filename, { create: true })).createWritable();
+      await w.write(blob);
+      await w.close();
+      toast(`Saved ${filename} to the “${dir.name}” folder.`);
+      return;
+    } catch (e) {
+      toast(e.name === 'AbortError' ? 'No folder chosen, so the file was downloaded normally.' : 'Could not save to the folder (' + e.message + '). Downloaded normally instead.', 'error');
+    }
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+async function chooseReceiptsFolder() {
+  try { const d = await pickReceiptsFolder(); toast(`Receipts will now save to “${d.name}”.`); showFolderName(); }
+  catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error'); }
+}
+async function showFolderName() {
+  const el = $('rcptFolder');
+  if (!el) return;
+  let dir = rcptDir;
+  if (!dir) { try { dir = await idbGet('receiptsDir'); } catch (e) {} }
+  el.textContent = dir ? `Current folder: ${dir.name}` : 'No folder chosen yet. You will be asked the first time you download a receipt.';
+}
+
+// Install button ("Install app") for desktop Chrome/Edge and Android Chrome
+let deferredInstall = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstall = e;
+  document.querySelectorAll('.js-install').forEach((b) => b.classList.remove('hidden'));
+});
+window.addEventListener('appinstalled', () => { deferredInstall = null; document.querySelectorAll('.js-install').forEach((b) => b.classList.add('hidden')); });
+async function installApp() {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  await deferredInstall.userChoice;
+  deferredInstall = null;
+  document.querySelectorAll('.js-install').forEach((b) => b.classList.add('hidden'));
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     ...options,
@@ -284,7 +381,11 @@ function showReceiptObj(r) {
     foot: `<button class="btn" onclick="closeModal()">Close</button><button class="btn" onclick="printReceipt()">Print</button><button class="btn primary" onclick="downloadReceiptPDF()">Download PDF</button>`
   });
 }
-function printHTML(html) { $('printArea').innerHTML = html; window.print(); }
+function printHTML(html) {
+  if (window.AndroidBridge) { toast('Printing is not available inside the app. Use Download PDF instead.', 'error'); return; }
+  $('printArea').innerHTML = html;
+  window.print();
+}
 const printReceipt = () => printHTML(receiptHTML(S.receipt));
 
 function downloadReceiptPDF() {
@@ -317,7 +418,7 @@ function downloadReceiptPDF() {
   d.setFont('helvetica', 'normal'); d.setFontSize(9); d.setTextColor(100, 112, 129);
   d.text('Remaining on this item: ' + money(r.bill_balance), 12, y + 21);
   d.setFontSize(8); d.text('Generated electronically by the TCC billing system. Keep this receipt for your records.', W / 2, 200, { align: 'center' });
-  d.save(`${r.or_no}.pdf`);
+  saveBlob(d.output('blob'), `${r.or_no}.pdf`, { receipt: true });
 }
 
 function printSOA(d) {
@@ -455,7 +556,10 @@ VIEWS.account = async function () {
         <label class="field"><span>Current password</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
         <label class="field"><span>New password</span><input name="new_password" type="password" minlength="6" autocomplete="new-password" required /><small>At least 6 characters.</small></label>
         <button class="btn primary" type="submit">Update password</button>
-      </form></div></section></div>`);
+      </form></div></section></div>
+    ${canPickFolder() ? `<section class="panel"><div class="panel-head"><div><h3>Receipt PDF folder</h3><p>Downloaded receipts save straight into this folder with no save dialog.</p></div>
+      <button class="btn" onclick="chooseReceiptsFolder()">Choose folder</button></div><div class="panel-body"><p class="muted" id="rcptFolder" style="margin:0"></p></div></section>` : ''}`);
+  showFolderName();
 };
 async function doChangePw(fd, form) {
   const r = await post('/api/auth/change-password', { current_password: fd.get('current_password'), new_password: fd.get('new_password') });
@@ -933,11 +1037,7 @@ async function exportCSV() {
   try {
     const res = await fetch('/api/staff/payments.csv?' + txnQuery(), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error('The export failed. Try again.');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(await res.blob());
-    a.download = `payments-${todayStr()}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    await saveBlob(await res.blob(), `payments-${todayStr()}.csv`);
   } catch (e) { toast(e.message, 'error'); }
 }
 
