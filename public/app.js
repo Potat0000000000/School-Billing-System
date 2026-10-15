@@ -1,47 +1,60 @@
 let authToken = localStorage.getItem('token') || '';
 let currentUser = JSON.parse(localStorage.getItem('user') || 'null');
+let studentBills = [];
+let studentPayments = [];
+let cashierBills = [];
+
+// ---------- helpers ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const peso = (n) => '₱' + Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const orNo = (id) => 'OR-' + String(id).padStart(5, '0');
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...(options.headers || {})
+    }
+  });
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  if (res.status === 401 && authToken) {
+    handleLogout();
+    throw new Error(data.error || 'Session expired. Please log in again.');
+  }
+  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  return data;
+}
 
 document.addEventListener('DOMContentLoaded', () => {
-  if (authToken && currentUser) {
-    showApp();
-  } else {
-    showAuth();
-  }
+  if (authToken && currentUser) showApp();
+  else showAuth();
 });
 
+// ---------- auth ----------
 function switchAuthTab(tab) {
-  if (tab === 'login') {
-    document.getElementById('loginForm').classList.remove('hidden');
-    document.getElementById('registerForm').classList.add('hidden');
-    document.getElementById('tabLoginBtn').classList.add('active-tab');
-    document.getElementById('tabRegisterBtn').classList.remove('active-tab');
-  } else {
-    document.getElementById('loginForm').classList.add('hidden');
-    document.getElementById('registerForm').classList.remove('hidden');
-    document.getElementById('tabLoginBtn').classList.remove('active-tab');
-    document.getElementById('tabRegisterBtn').classList.add('active-tab');
-  }
+  const login = tab === 'login';
+  $('loginForm').classList.toggle('hidden', !login);
+  $('registerForm').classList.toggle('hidden', login);
+  $('tabLoginBtn').classList.toggle('active-tab', login);
+  $('tabRegisterBtn').classList.toggle('active-tab', !login);
 }
 
 async function handleLogin(e) {
   e.preventDefault();
-  const identifier = document.getElementById('loginIdentifier').value.trim();
-  const password = document.getElementById('loginPassword').value;
-
   try {
-    const res = await fetch('/api/auth/login', {
+    const data = await api('/api/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier, password })
+      body: JSON.stringify({ identifier: $('loginIdentifier').value.trim(), password: $('loginPassword').value })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Login failed');
-
     authToken = data.token;
     currentUser = data.user;
     localStorage.setItem('token', authToken);
     localStorage.setItem('user', JSON.stringify(currentUser));
-
+    $('loginForm').reset();
     showApp();
   } catch (err) {
     alert(err.message);
@@ -50,24 +63,20 @@ async function handleLogin(e) {
 
 async function handleRegister(e) {
   e.preventDefault();
-  const student_id = document.getElementById('regStudentId').value.trim();
-  const full_name = document.getElementById('regFullName').value.trim();
-  const email = document.getElementById('regEmail').value.trim();
-  const year_level = document.getElementById('regYearLevel').value;
-  const password = document.getElementById('regPassword').value;
-
   try {
-    const res = await fetch('/api/auth/register', {
+    const data = await api('/api/auth/register', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ student_id, full_name, email, year_level, password })
+      body: JSON.stringify({
+        student_id: $('regStudentId').value.trim(),
+        full_name: $('regFullName').value.trim(),
+        email: $('regEmail').value.trim(),
+        year_level: $('regYearLevel').value,
+        password: $('regPassword').value
+      })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Registration failed');
-
     alert(data.message);
+    $('registerForm').reset();
     switchAuthTab('login');
-    document.getElementById('registerForm').reset();
   } catch (err) {
     alert(err.message);
   }
@@ -78,148 +87,251 @@ function handleLogout() {
   localStorage.removeItem('user');
   authToken = '';
   currentUser = null;
-  document.getElementById('appContainer').classList.add('hidden');
-  document.getElementById('authContainer').classList.remove('hidden');
+  showAuth();
 }
 
 function showAuth() {
-  document.getElementById('authContainer').classList.remove('hidden');
-  document.getElementById('appContainer').classList.add('hidden');
+  $('authContainer').classList.remove('hidden');
+  $('appContainer').classList.add('hidden');
 }
 
 function showApp() {
-  document.getElementById('authContainer').classList.add('hidden');
-  document.getElementById('appContainer').classList.remove('hidden');
-  document.getElementById('userInfoDisplay').innerText = `${currentUser.full_name} (${currentUser.role.toUpperCase()})`;
+  $('authContainer').classList.add('hidden');
+  $('appContainer').classList.remove('hidden');
+  $('userInfoDisplay').innerText = `${currentUser.full_name} (${currentUser.role.toUpperCase()})`;
 
-  const roleNav = document.getElementById('roleNav');
-  roleNav.innerHTML = '';
-
+  const nav = $('roleNav');
   if (currentUser.role === 'student') {
-    roleNav.innerHTML = `<button onclick="switchRole('student')" id="navStudent" class="active-role">👤 Student Portal</button>`;
+    nav.innerHTML = `<button onclick="switchRole('student')" id="navStudent">👤 Student Portal</button>`;
     switchRole('student');
-    loadStudentData(currentUser.user_id);
   } else if (currentUser.role === 'cashier') {
-    roleNav.innerHTML = `<button onclick="switchRole('cashier')" id="navCashier" class="active-role">💵 Cashier Dashboard</button>`;
+    nav.innerHTML = `<button onclick="switchRole('cashier')" id="navCashier">💵 Cashier Dashboard</button>`;
     switchRole('cashier');
   } else if (currentUser.role === 'admin') {
-    roleNav.innerHTML = `
-      <button onclick="switchRole('student')" id="navStudent" class="active-role">👤 Student Portal</button>
-      <button onclick="switchRole('cashier')" id="navCashier">💵 Cashier</button>
+    nav.innerHTML = `
       <button onclick="switchRole('admin')" id="navAdmin">⚙️ Admin Panel</button>
-    `;
-    switchRole('student');
-    loadStudentData(currentUser.user_id);
+      <button onclick="switchRole('cashier')" id="navCashier">💵 Cashier</button>`;
+    switchRole('admin');
   }
 }
 
 function switchRole(role) {
-  document.querySelectorAll('.portal-section').forEach(s => s.classList.add('hidden'));
-  document.querySelectorAll('.role-nav button').forEach(b => b.classList.remove('active-role'));
+  document.querySelectorAll('.portal-section').forEach((s) => s.classList.add('hidden'));
+  document.querySelectorAll('.role-nav button').forEach((b) => b.classList.remove('active-role'));
 
   if (role === 'student') {
-    document.getElementById('roleStudent').classList.remove('hidden');
-    const navBtn = document.getElementById('navStudent');
-    if (navBtn) navBtn.classList.add('active-role');
-    if (currentUser) loadStudentData(currentUser.user_id);
+    $('roleStudent').classList.remove('hidden');
+    loadStudentData(currentUser.user_id);
   } else if (role === 'cashier') {
-    document.getElementById('roleCashier').classList.remove('hidden');
-    const navBtn = document.getElementById('navCashier');
-    if (navBtn) navBtn.classList.add('active-role');
+    $('roleCashier').classList.remove('hidden');
+    loadPending();
   } else if (role === 'admin') {
-    document.getElementById('roleAdmin').classList.remove('hidden');
-    const navBtn = document.getElementById('navAdmin');
-    if (navBtn) navBtn.classList.add('active-role');
+    $('roleAdmin').classList.remove('hidden');
+    loadAdminUsers();
   }
+  const navBtn = $('nav' + role.charAt(0).toUpperCase() + role.slice(1));
+  if (navBtn) navBtn.classList.add('active-role');
+}
+
+// ---------- student ----------
+function statusLabel(s) {
+  const map = {
+    paid: ['Paid', 'text-success'],
+    confirmed: ['Confirmed', 'text-success'],
+    partially_paid: ['Partial', 'text-warning'],
+    pending: ['Pending', 'text-warning'],
+    unpaid: ['Unpaid', 'text-danger'],
+    rejected: ['Rejected', 'text-danger']
+  };
+  const [label, cls] = map[s] || [s, ''];
+  return `<span class="${cls}">${esc(label)}</span>`;
 }
 
 async function loadStudentData(studentId) {
   try {
-    const res = await fetch(`/api/student/${studentId}/summary`, {
-      headers: { 'Authorization': `Bearer ${authToken}` }
+    const data = await api(`/api/student/${studentId}/summary`);
+    studentBills = data.bills;
+    studentPayments = data.payments;
+
+    $('sId').innerText = currentUser.student_or_emp_id || studentId;
+    $('sName').innerText = currentUser.full_name;
+    $('sBalance').innerText = peso(data.current_balance);
+
+    $('sBillsTableBody').innerHTML = data.bills.length
+      ? data.bills.map((b) => `<tr>
+          <td>${esc(b.title)}</td><td>${peso(b.amount)}</td><td>${peso(b.paid)}</td>
+          <td>${statusLabel(b.status)}</td>
+          <td>${b.due_date ? new Date(b.due_date).toLocaleDateString('en-PH') : 'N/A'}</td></tr>`).join('')
+      : `<tr><td colspan="5" class="empty">No bills yet.</td></tr>`;
+
+    const sel = $('spBillSelect');
+    sel.innerHTML = '<option value="">-- Choose Unpaid Bill --</option>';
+    data.bills.filter((b) => b.status !== 'paid').forEach((b) => {
+      const remaining = Number(b.amount) - Number(b.paid);
+      sel.innerHTML += `<option value="${b.bill_id}">${esc(b.title)} (balance ${peso(remaining)})</option>`;
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to load student data');
 
-    document.getElementById('sId').innerText = currentUser.student_or_emp_id || studentId;
-    document.getElementById('sName').innerText = currentUser.full_name;
-    document.getElementById('sBalance').innerText = `₱${Number(data.current_balance).toLocaleString(undefined, {minimumFractionDigits: 2})}`;
-
-    const billsBody = document.getElementById('sBillsTableBody');
-    const billSelect = document.getElementById('spBillSelect');
-    billsBody.innerHTML = '';
-    billSelect.innerHTML = '<option value="">-- Choose Unpaid Bill --</option>';
-
-    data.bills.forEach(b => {
-      billsBody.innerHTML += `<tr><td>${b.title}</td><td>₱${Number(b.amount).toLocaleString(undefined, {minimumFractionDigits: 2})}</td><td><span class="text-${b.status === 'paid' ? 'success' : 'danger'}">${b.status}</span></td><td>${b.due_date ? new Date(b.due_date).toLocaleDateString() : 'N/A'}</td></tr>`;
-      if (b.status !== 'paid') {
-        billSelect.innerHTML += `<option value="${b.bill_id}">${b.title} (₱${b.amount})</option>`;
-      }
-    });
-
-    const historyTable = document.getElementById('studentHistoryTable');
-    if (data.payments.length === 0) {
-      historyTable.innerHTML = `<tr><th>Date</th><th>Method</th><th>Amount Paid</th></tr><tr><td colspan="3" style="text-align: center; color: #64748b;">No payment history found.</td></tr>`;
-    } else {
-      historyTable.innerHTML = `<tr><th>Date</th><th>Method</th><th>Amount Paid</th></tr>`;
-      data.payments.forEach(p => {
-        historyTable.innerHTML += `<tr><td>${new Date(p.payment_date).toLocaleString()}</td><td>${p.payment_method.toUpperCase()}</td><td>₱${Number(p.amount_paid).toLocaleString(undefined, {minimumFractionDigits: 2})}</td></tr>`;
-      });
-    }
+    $('studentHistoryBody').innerHTML = data.payments.length
+      ? data.payments.map((p) => `<tr>
+          <td>${new Date(p.payment_date).toLocaleString('en-PH')}</td>
+          <td>${esc(p.bill_title)}</td>
+          <td>${esc(String(p.payment_method).toUpperCase())}</td>
+          <td>${peso(p.amount_paid)}</td>
+          <td>${statusLabel(p.status)}</td>
+          <td class="no-print">${p.status === 'confirmed' ? `<button class="btn-small" onclick="viewReceipt(${p.payment_id})">Receipt</button>` : ''}</td></tr>`).join('')
+      : `<tr><td colspan="6" class="empty">No payment history found.</td></tr>`;
   } catch (err) {
     console.error(err);
   }
 }
 
+function fillStudentAmount() {
+  const b = studentBills.find((x) => String(x.bill_id) === $('spBillSelect').value);
+  $('spAmount').value = b ? (Number(b.amount) - Number(b.paid)).toFixed(2) : '';
+}
+
 async function submitStudentPayment(e) {
   e.preventDefault();
-  const bill_id = document.getElementById('spBillSelect').value;
-  const amount_paid = document.getElementById('spAmount').value;
-  const payment_method = document.getElementById('spChannel').value;
-
   try {
-    const res = await fetch('/api/payments', {
+    const data = await api('/api/student/payments', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify({ bill_id, student_id: currentUser.user_id, amount_paid, payment_method })
+      body: JSON.stringify({
+        bill_id: $('spBillSelect').value,
+        amount_paid: $('spAmount').value,
+        payment_method: $('spChannel').value,
+        reference_no: $('spReference').value
+      })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-
     alert(data.message);
-    showReceipt('OR-' + data.payment_id.toString().padStart(5, '0'), amount_paid, payment_method);
+    $('studentPaymentForm').reset();
     loadStudentData(currentUser.user_id);
-    document.getElementById('studentPaymentForm').reset();
   } catch (err) {
     alert(err.message);
   }
 }
 
+function viewReceipt(paymentId) {
+  const p = studentPayments.find((x) => x.payment_id === paymentId);
+  if (!p) return;
+  showReceipt({
+    or_no: orNo(p.payment_id),
+    date: p.payment_date,
+    amount: p.amount_paid,
+    method: p.payment_method,
+    student_name: currentUser.full_name,
+    bill_title: p.bill_title
+  });
+}
+
+// ---------- cashier ----------
+async function lookupStudent() {
+  const no = $('cStudentNo').value.trim();
+  try {
+    const data = await api(`/api/cashier/lookup?student_no=${encodeURIComponent(no)}`);
+    cashierBills = data.bills;
+    $('cStudentName').innerHTML = `Student: <strong>${esc(data.student.full_name)}</strong> (${esc(data.student.student_or_emp_id)})`;
+    const sel = $('cBillSelect');
+    sel.innerHTML = data.bills.length
+      ? '<option value="">-- Choose Bill --</option>' +
+        data.bills.map((b) => `<option value="${b.bill_id}">${esc(b.title)} (balance ${peso(b.remaining)})</option>`).join('')
+      : '<option value="">No unpaid bills</option>';
+  } catch (err) {
+    cashierBills = [];
+    $('cStudentName').innerText = '';
+    $('cBillSelect').innerHTML = '<option value="">-- Find a student first --</option>';
+    alert(err.message);
+  }
+}
+
+function fillCashierAmount() {
+  const b = cashierBills.find((x) => String(x.bill_id) === $('cBillSelect').value);
+  $('cAmount').value = b ? Number(b.remaining).toFixed(2) : '';
+}
+
 async function processCashierPayment(e) {
   e.preventDefault();
-  const student_id = document.getElementById('cStudentId').value.trim();
-  const bill_id = document.getElementById('cBillId').value.trim();
-  const amount_paid = document.getElementById('cAmount').value;
-  const payment_method = document.getElementById('cMethod').value;
-
   try {
-    const res = await fetch('/api/payments', {
+    const data = await api('/api/payments', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify({ student_id, bill_id, amount_paid, payment_method })
+      body: JSON.stringify({
+        bill_id: $('cBillSelect').value,
+        amount_paid: $('cAmount').value,
+        payment_method: $('cMethod').value
+      })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-
     alert(data.message);
-    showReceipt('OR-' + data.payment_id.toString().padStart(5, '0'), amount_paid, payment_method);
-    document.getElementById('cashierForm').reset();
+    showReceipt(data.receipt);
+    $('cashierForm').reset();
+    $('cStudentName').innerText = '';
+    $('cBillSelect').innerHTML = '<option value="">-- Find a student first --</option>';
+    cashierBills = [];
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function loadPending() {
+  try {
+    const data = await api('/api/cashier/pending-payments');
+    $('pendingBody').innerHTML = data.payments.length
+      ? data.payments.map((p) => `<tr>
+          <td>${esc(p.full_name)}<br><small>${esc(p.student_or_emp_id)}</small></td>
+          <td>${esc(p.title)}</td>
+          <td>${esc(String(p.payment_method).toUpperCase())}</td>
+          <td>${esc(p.reference_no || '-')}</td>
+          <td>${peso(p.amount_paid)}</td>
+          <td class="actions">
+            <button class="btn-small btn-print" onclick="confirmPending(${p.payment_id})">Confirm</button>
+            <button class="btn-small btn-close" onclick="rejectPending(${p.payment_id})">Reject</button>
+          </td></tr>`).join('')
+      : `<tr><td colspan="6" class="empty">No pending payments.</td></tr>`;
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function confirmPending(id) {
+  if (!confirm('Confirm this payment and send the receipt?')) return;
+  try {
+    const data = await api(`/api/cashier/payments/${id}/confirm`, { method: 'POST' });
+    showReceipt(data.receipt);
+    loadPending();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+async function rejectPending(id) {
+  if (!confirm('Reject this payment?')) return;
+  try {
+    await api(`/api/cashier/payments/${id}/reject`, { method: 'POST' });
+    loadPending();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// ---------- admin ----------
+async function loadAdminUsers() {
+  try {
+    const data = await api('/api/admin/users?status=pending');
+    $('pendingUsersBody').innerHTML = data.users.length
+      ? data.users.map((u) => `<tr>
+          <td>${esc(u.student_or_emp_id)}</td><td>${esc(u.full_name)}</td><td>${esc(u.email)}</td>
+          <td class="actions">
+            <button class="btn-small btn-print" onclick="setUserStatus(${u.user_id}, 'approved')">Approve</button>
+            <button class="btn-small btn-close" onclick="setUserStatus(${u.user_id}, 'rejected')">Reject</button>
+          </td></tr>`).join('')
+      : `<tr><td colspan="4" class="empty">No pending registrations.</td></tr>`;
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function setUserStatus(id, status) {
+  try {
+    await api(`/api/admin/users/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) });
+    loadAdminUsers();
   } catch (err) {
     alert(err.message);
   }
@@ -227,38 +339,34 @@ async function processCashierPayment(e) {
 
 async function addNewBill(e) {
   e.preventDefault();
-  const student_id = document.getElementById('abStudentId').value.trim();
-  const title = document.getElementById('abTitle').value.trim();
-  const amount = document.getElementById('abAmount').value;
-  const due_date = document.getElementById('abDueDate').value;
-
   try {
-    const res = await fetch('/api/cashier/add-bill', {
+    const data = await api('/api/cashier/add-bill', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${authToken}`
-      },
-      body: JSON.stringify({ student_id, title, amount, due_date, fee_type_id: 1 })
+      body: JSON.stringify({
+        student_id: $('abStudentId').value.trim(),
+        title: $('abTitle').value.trim(),
+        amount: $('abAmount').value,
+        due_date: $('abDueDate').value
+      })
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
-
     alert(data.message);
-    document.getElementById('adminAddBillForm').reset();
+    $('adminAddBillForm').reset();
   } catch (err) {
     alert(err.message);
   }
 }
 
-function showReceipt(orNum, amount, method) {
-  document.getElementById('rcptOR').innerText = orNum;
-  document.getElementById('rcptDate').innerText = new Date().toLocaleString();
-  document.getElementById('rcptAmount').innerText = `₱${Number(amount).toLocaleString(undefined, {minimumFractionDigits: 2})}`;
-  document.getElementById('rcptMethod').innerText = method.toUpperCase();
-  document.getElementById('receiptModal').classList.remove('hidden');
+// ---------- receipt ----------
+function showReceipt(r) {
+  $('rcptOR').innerText = r.or_no;
+  $('rcptDate').innerText = new Date(r.date).toLocaleString('en-PH');
+  $('rcptName').innerText = r.student_name || '';
+  $('rcptBill').innerText = r.bill_title || '';
+  $('rcptAmount').innerText = peso(r.amount);
+  $('rcptMethod').innerText = String(r.method).toUpperCase();
+  $('receiptModal').classList.remove('hidden');
 }
 
 function closeModal() {
-  document.getElementById('receiptModal').classList.add('hidden');
+  $('receiptModal').classList.add('hidden');
 }

@@ -3,23 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="manifest" href="/manifest.json" />
   <title>Torres Capitol College - School Billing & Payment System</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
-  <!-- AUTH CONTAINER (Shown when not logged in) -->
+  <!-- AUTH CONTAINER -->
   <div id="authContainer" class="auth-container">
     <div class="auth-card">
       <h2>🎓 Torres Capitol College</h2>
       <p class="subtitle">School Billing & Payment System</p>
-      
+
       <div class="auth-tabs">
         <button onclick="switchAuthTab('login')" id="tabLoginBtn" class="active-tab">Login</button>
         <button onclick="switchAuthTab('register')" id="tabRegisterBtn">Register</button>
       </div>
 
-      <!-- Login Form -->
       <form id="loginForm" onsubmit="handleLogin(event)">
         <div class="form-group">
           <label>Student ID or Email</label>
@@ -32,7 +33,6 @@
         <button type="submit" class="btn-primary full-width">Sign In</button>
       </form>
 
-      <!-- Register Form -->
       <form id="registerForm" onsubmit="handleRegister(event)" class="hidden">
         <div class="form-group">
           <label>Student ID Number</label>
@@ -56,24 +56,22 @@
           </select>
         </div>
         <div class="form-group">
-          <label>Password</label>
-          <input type="password" id="regPassword" placeholder="••••••••" required />
+          <label>Password (min. 6 characters)</label>
+          <input type="password" id="regPassword" placeholder="••••••••" minlength="6" required />
         </div>
         <button type="submit" class="btn-primary full-width">Submit Registration</button>
       </form>
     </div>
   </div>
 
-  <!-- MAIN APP CONTAINER (Shown after login) -->
+  <!-- MAIN APP -->
   <div id="appContainer" class="hidden">
     <header class="no-print">
       <div class="header-content">
         <h1>🎓 TCC Billing System</h1>
         <div class="header-right">
           <span id="userInfoDisplay" class="user-badge"></span>
-          <nav class="role-nav" id="roleNav">
-            <!-- Dynamically populated based on role -->
-          </nav>
+          <nav class="role-nav" id="roleNav"></nav>
           <button onclick="handleLogout()" class="btn-danger-outline">Logout</button>
         </div>
       </div>
@@ -91,32 +89,34 @@
           <div class="info-grid">
             <p><strong>Student ID:</strong> <span id="sId"></span></p>
             <p><strong>Full Name:</strong> <span id="sName"></span></p>
-            <p><strong>Status:</strong> <span id="sStatus" class="text-success">Approved</span></p>
+            <p><strong>Status:</strong> <span class="text-success">Approved</span></p>
           </div>
 
-          <table class="fee-table">
-            <tr><th>Description / Bill Item</th><th>Amount</th><th>Status</th><th>Due Date</th></tr>
-            <tbody id="sBillsTableBody"></tbody>
-          </table>
+          <div class="table-wrap">
+            <table class="fee-table">
+              <thead><tr><th>Description / Bill Item</th><th>Amount</th><th>Paid</th><th>Status</th><th>Due Date</th></tr></thead>
+              <tbody id="sBillsTableBody"></tbody>
+            </table>
+          </div>
 
           <table class="fee-table" style="margin-top: 1rem;">
             <tr class="highlight"><th>Total Outstanding Balance</th><td id="sBalance" class="text-danger">₱0.00</td></tr>
           </table>
         </div>
 
-        <!-- Payment Submission -->
         <div class="card no-print">
-          <h2>Submit Online Payment / Reference</h2>
+          <h2>Submit Online Payment</h2>
+          <p class="subtitle">Pay through GCash / bank, then submit your reference here. A cashier will verify it.</p>
           <form id="studentPaymentForm" onsubmit="submitStudentPayment(event)" class="payment-form-grid">
             <div class="form-group">
               <label>Select Bill to Pay</label>
-              <select id="spBillSelect" required>
+              <select id="spBillSelect" onchange="fillStudentAmount()" required>
                 <option value="">-- Choose Unpaid Bill --</option>
               </select>
             </div>
             <div class="form-group">
               <label>Payment Amount (₱)</label>
-              <input type="number" id="spAmount" step="0.01" required placeholder="0.00" />
+              <input type="number" id="spAmount" step="0.01" min="0.01" required placeholder="0.00" />
             </div>
             <div class="form-group">
               <label>Payment Channel</label>
@@ -126,17 +126,22 @@
                 <option value="Business Office">Over-the-Counter (Business Office)</option>
               </select>
             </div>
-            <button type="submit" class="btn-primary" style="grid-column: span 2;">Submit Payment Reference</button>
+            <div class="form-group">
+              <label>Reference Number</label>
+              <input type="text" id="spReference" placeholder="GCash / bank reference no." />
+            </div>
+            <button type="submit" class="btn-primary" style="grid-column: 1 / -1;">Submit Payment Reference</button>
           </form>
         </div>
 
-        <!-- Payment History -->
         <div class="card">
           <h2>Payment History & Receipts</h2>
-          <table class="fee-table" id="studentHistoryTable">
-            <tr><th>Date</th><th>Method</th><th>Amount Paid</th></tr>
-            <tr><td colspan="3" style="text-align: center; color: #64748b;">No payment history found.</td></tr>
-          </table>
+          <div class="table-wrap">
+            <table class="fee-table">
+              <thead><tr><th>Date</th><th>Bill</th><th>Method</th><th>Amount</th><th>Status</th><th></th></tr></thead>
+              <tbody id="studentHistoryBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -144,20 +149,24 @@
       <section id="roleCashier" class="portal-section hidden">
         <div class="card">
           <h2>Cashier Transaction Window</h2>
-          <p class="subtitle">Record counter payments and generate official receipts.</p>
-          
+          <p class="subtitle">Find a student, then record a counter payment.</p>
+
+          <div class="lookup-row">
+            <input type="text" id="cStudentNo" placeholder="Student ID, e.g. 2024-0001" />
+            <button type="button" onclick="lookupStudent()">🔍 Find Student</button>
+          </div>
+          <p id="cStudentName" class="lookup-result"></p>
+
           <form id="cashierForm" onsubmit="processCashierPayment(event)" class="payment-form-grid">
             <div class="form-group">
-              <label>Student User ID</label>
-              <input type="number" id="cStudentId" placeholder="e.g., 1" required />
-            </div>
-            <div class="form-group">
-              <label>Bill ID</label>
-              <input type="number" id="cBillId" placeholder="Bill ID to apply payment" required />
+              <label>Bill</label>
+              <select id="cBillSelect" onchange="fillCashierAmount()" required>
+                <option value="">-- Find a student first --</option>
+              </select>
             </div>
             <div class="form-group">
               <label>Amount Received (₱)</label>
-              <input type="number" id="cAmount" step="0.01" placeholder="0.00" required />
+              <input type="number" id="cAmount" step="0.01" min="0.01" placeholder="0.00" required />
             </div>
             <div class="form-group">
               <label>Payment Mode</label>
@@ -167,21 +176,46 @@
                 <option value="bank">Bank Transfer</option>
               </select>
             </div>
-            <button type="submit" class="btn-primary" style="grid-column: span 2;">Process Payment & Email Receipt</button>
+            <button type="submit" class="btn-primary" style="grid-column: 1 / -1;">Process Payment & Email Receipt</button>
           </form>
+        </div>
+
+        <div class="card">
+          <div class="flex-between">
+            <h2>Pending Student Payments</h2>
+            <button class="btn-secondary" onclick="loadPending()">↻ Refresh</button>
+          </div>
+          <div class="table-wrap">
+            <table class="fee-table">
+              <thead><tr><th>Student</th><th>Bill</th><th>Method</th><th>Reference</th><th>Amount</th><th></th></tr></thead>
+              <tbody id="pendingBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
       <!-- ADMIN PANEL -->
       <section id="roleAdmin" class="portal-section hidden">
         <div class="card">
-          <h2>Admin Management Panel</h2>
-          <p class="subtitle">Issue new assessment bills, miscellaneous fees, or penalties to students.</p>
-          
+          <div class="flex-between">
+            <h2>Pending Registrations</h2>
+            <button class="btn-secondary" onclick="loadAdminUsers()">↻ Refresh</button>
+          </div>
+          <div class="table-wrap">
+            <table class="fee-table">
+              <thead><tr><th>Student ID</th><th>Name</th><th>Email</th><th></th></tr></thead>
+              <tbody id="pendingUsersBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Issue a New Bill</h2>
+          <p class="subtitle">Add assessment bills, miscellaneous fees, or penalties.</p>
           <form id="adminAddBillForm" onsubmit="addNewBill(event)" class="payment-form-grid">
             <div class="form-group">
-              <label>Student User ID</label>
-              <input type="number" id="abStudentId" placeholder="e.g., 1" required />
+              <label>Student ID Number</label>
+              <input type="text" id="abStudentId" placeholder="e.g., 2024-0001" required />
             </div>
             <div class="form-group">
               <label>Fee Title / Description</label>
@@ -189,13 +223,13 @@
             </div>
             <div class="form-group">
               <label>Amount (₱)</label>
-              <input type="number" id="abAmount" step="0.01" placeholder="1500.00" required />
+              <input type="number" id="abAmount" step="0.01" min="0.01" placeholder="1500.00" required />
             </div>
             <div class="form-group">
               <label>Due Date</label>
-              <input type="date" id="abDueDate" required />
+              <input type="date" id="abDueDate" />
             </div>
-            <button type="submit" class="btn-primary" style="grid-column: span 2;">Issue Assessment Bill</button>
+            <button type="submit" class="btn-primary" style="grid-column: 1 / -1;">Issue Bill</button>
           </form>
         </div>
       </section>
@@ -213,6 +247,8 @@
       <div class="receipt-body">
         <p><strong>OR Number:</strong> <span id="rcptOR"></span></p>
         <p><strong>Date/Time:</strong> <span id="rcptDate"></span></p>
+        <p><strong>Student:</strong> <span id="rcptName"></span></p>
+        <p><strong>Item:</strong> <span id="rcptBill"></span></p>
         <p><strong>Amount Paid:</strong> <span id="rcptAmount"></span></p>
         <p><strong>Payment Channel:</strong> <span id="rcptMethod"></span></p>
       </div>
@@ -224,5 +260,10 @@
   </div>
 
   <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+    }
+  </script>
 </body>
 </html>
