@@ -254,9 +254,26 @@ tfoot td { font-weight: 600; background: color-mix(in srgb, var(--paper) 60%, va
   .receipt { border: 1px solid #999; }
   @page { margin: 14mm; }
 }
-/* Logo image (replaces the text crest) */
-.logo { display: block; height: 120px; width: auto; }
-.logo.sm { height: 40px; flex: none; }
+/* Logo image. align-self + aspect-ratio stop flex containers from stretching it. */
+.logo { display: block; height: 84px; width: auto; aspect-ratio: 223 / 239; max-width: none; object-fit: contain; align-self: flex-start; flex: none; }
+.logo.sm { height: 38px; align-self: center; }
 .forgot-row { text-align: right; margin: -.25rem 0 1rem; font-size: .88rem; }
 .auth-back { text-align: center; margin-top: 1rem; font-size: .9rem; }
-@media (max-width: 860px) { .auth-brand .logo { height: 84px; } }
+@media (max-width: 900px) { .auth-brand .logo { height: 64px; } }
+
+/* Cashier terminal */
+.term-split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem; align-items: start; }
+.term-split > .panel { margin-bottom: 0; }
+.kpi.click { cursor: pointer; }
+.kpi.click:hover { background: var(--brass-soft); }
+.owe-banner { display: flex; justify-content: space-between; align-items: center; gap: 1rem; background: var(--bad-bg); color: var(--bad); border-radius: 8px; padding: .7rem 1rem; margin-bottom: 1rem; font-weight: 600; }
+.owe-banner strong { font-family: var(--serif); font-size: 1.35rem; }
+.owe-banner.clear { background: var(--ok-bg); color: var(--ok); }
+.who-line { margin: -.4rem 0 1rem; font-size: .9rem; }
+.change-line { margin: -.5rem 0 1rem; font-weight: 600; min-height: 1.4em; }
+.change-line.short { color: var(--bad); }
+.change-line.ok { color: var(--ok); }
+.recent h4 { font-family: var(--serif); margin: 1.4rem 0 .4rem; font-size: 1rem; color: var(--ink); }
+.recent .mini-list { margin: 0 -1.25rem -1.25rem; border-top: 1px solid var(--line); }
+.recent .mini-list li { align-items: center; padding: .6rem 1.25rem; }
+@media (max-width: 900px) { .term-split { grid-template-columns: 1fr; } }

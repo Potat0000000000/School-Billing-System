@@ -188,10 +188,10 @@ function showAuth() { $('auth').classList.remove('hidden'); $('app').classList.a
 
 const NAV = {
   student: [['dashboard', 'Dashboard', 'home'], ['pay', 'Pay a bill', 'pay'], ['history', 'Payments & receipts', 'receipt'], ['account', 'My account', 'user']],
-  cashier: [['dashboard', 'Dashboard', 'home'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['registrations', 'Registrations', 'inbox'], ['account', 'My account', 'user']],
-  admin: [['overview', 'Overview', 'chart'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['registrations', 'Registrations', 'inbox'], ['users', 'Users & staff', 'user'], ['setup', 'Billing setup', 'cog'], ['audit', 'Audit log', 'log'], ['account', 'My account', 'user']]
+  cashier: [['terminal', 'Cashier terminal', 'pay'], ['dashboard', 'Dashboard', 'home'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['registrations', 'Registrations', 'inbox'], ['account', 'My account', 'user']],
+  admin: [['overview', 'Overview', 'chart'], ['terminal', 'Cashier terminal', 'pay'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['registrations', 'Registrations', 'inbox'], ['users', 'Users & staff', 'user'], ['setup', 'Billing setup', 'cog'], ['audit', 'Audit log', 'log'], ['account', 'My account', 'user']]
 };
-const TITLES = { dashboard: 'Dashboard', overview: 'Overview', pay: 'Pay a bill', history: 'Payments & receipts', account: 'My account', students: 'Student accounts', transactions: 'Transactions', registrations: 'Registrations', users: 'Users & staff', setup: 'Billing setup', audit: 'Audit log' };
+const TITLES = { terminal: 'Cashier terminal', dashboard: 'Dashboard', overview: 'Overview', pay: 'Pay a bill', history: 'Payments & receipts', account: 'My account', students: 'Student accounts', transactions: 'Transactions', registrations: 'Registrations', users: 'Users & staff', setup: 'Billing setup', audit: 'Audit log' };
 
 function showApp() {
   $('auth').classList.add('hidden');
@@ -538,9 +538,225 @@ async function rejectPending(id) {
 }
 function afterPaymentChange() {
   refreshBadges();
-  if (S.view === 'students' && S.acct) loadAccount(S.acct);
+  if (S.view === 'terminal') { if (S.acct) loadTermStudent(S.acct); termKpis(); }
+  else if (S.view === 'students' && S.acct) loadAccount(S.acct);
   else if (S.view === 'transactions') loadTransactions();
   else if (S.view === 'dashboard' || S.view === 'overview') refresh();
+}
+
+// ---------- cashier terminal: issue a bill + process payment on one screen ----------
+const termTimers = {};
+const termPicker = (w) => `<label class="field"><span>Student</span>
+  <div class="ta"><input id="tin${w}" placeholder="Search Student ID or name, press Enter to pick" autocomplete="off"
+    oninput="termSearch('${w}', this.value)" onfocus="this.select();termSearch('${w}', '')" onkeydown="termKey(event, '${w}')" />
+  <div id="tl${w}" class="ta-list hidden"></div></div></label>`;
+
+VIEWS.terminal = async function () {
+  const [s, m, regs] = await Promise.all([api('/api/staff/stats'), api('/api/meta'), api('/api/staff/registrations')]);
+  S.meta = m;
+  S.badges = { pay: s.pending_payments, reg: s.pending_registrations };
+  renderNav();
+  const t = m.term;
+  const review = me.role === 'admin' ? 'overview' : 'dashboard';
+
+  setView(`
+    <div class="kpis">
+      <div class="kpi ok"><span>Collected today</span><strong id="tkToday">${peso(s.collected_today)}</strong><small class="muted" id="tkCount">${s.transactions_today} transaction${s.transactions_today === 1 ? '' : 's'}</small></div>
+      <div class="kpi bad"><span>Total outstanding balance</span><strong id="tkOut">${peso(s.outstanding)}</strong><small class="muted" id="tkOver">${s.overdue_bills} overdue bill${s.overdue_bills === 1 ? '' : 's'}</small></div>
+      <div class="kpi click" onclick="go('${review}')" title="Review student-submitted payments"><span>Awaiting verification</span><strong id="tkPend">${s.pending_payments}</strong><small class="muted">student payments · review</small></div>
+      <div class="kpi click" onclick="$('termRegs').scrollIntoView({ behavior: 'smooth' })"><span>New registrations</span><strong id="tkReg">${s.pending_registrations}</strong><small class="muted">to approve</small></div>
+    </div>
+
+    <div class="term-split">
+      <section class="panel">
+        <div class="panel-head"><div><h3>Issue a bill</h3><p>Charge a fee or violation to a student's account.</p></div></div>
+        <div class="panel-body">
+          ${termPicker('Issue')}
+          <p class="who-line muted" id="tbWho"></p>
+          <form id="tbForm" onsubmit="submitForm(event, doTermIssue)">
+            <label class="field"><span>Fee type</span><select name="fee_type_id" onchange="termFeePick(this)" required>
+              <option value="">Select a standard fee type</option>
+              ${m.fee_types.map((f) => `<option value="${f.fee_type_id}" data-amt="${f.default_amount ?? ''}" data-name="${esc(f.name)}">${esc(f.name)}${f.description ? ' — ' + esc(f.description) : ''}</option>`).join('')}
+            </select></label>
+            <label class="field"><span>Bill title / description</span><input name="title" id="tbTitle" placeholder="e.g. Late library return, Laboratory fee" required /></label>
+            <div class="grid2">
+              <label class="field"><span>Amount (₱)</span><input name="amount" id="tbAmount" type="number" step="0.01" min="0.01" placeholder="0.00" required /></label>
+              <label class="field"><span>Due at</span><select name="due_period">${Object.entries(PERIODS).map(([k, v]) => `<option value="${k}" ${k === 'finals' ? 'selected' : ''}>${v}${t ? ' — ' + fmtDate(t[k]) : ''}</option>`).join('')}</select></label>
+            </div>
+            <p class="muted" style="margin-top:-.4rem;font-size:.85rem">${t ? esc(t.label) : 'No active semester is set, so this bill will have no due date.'}</p>
+            <button class="btn primary block" type="submit">Issue bill to account</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><h3>Process payment</h3><p>Take money at the counter.</p></div>
+          <button class="btn sm" onclick="exportCSV()">Export payments (CSV)</button></div>
+        <div class="panel-body recent">
+          ${termPicker('Pay')}
+          <div id="tpBox"><p class="muted">Pick a student to see their unpaid bills and take a payment.</p></div>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel" id="termRegs">
+      <div class="panel-head"><div><h3>Pending account registrations</h3><p>Verify the student is enrolled before approving.</p></div></div>
+      <div class="table-wrap"><table><thead><tr><th>Student ID</th><th>Name</th><th>Email</th><th>Year</th><th>Registered</th><th></th></tr></thead>
+      <tbody>${regs.users.length ? regs.users.map((u) => `<tr><td>${esc(u.student_or_emp_id)}</td><td>${esc(u.full_name)}</td><td>${esc(u.email)}</td><td>${u.year_level || '—'}</td><td>${fmtDT(u.created_at)}</td>
+        <td class="right"><div class="row-actions" style="justify-content:flex-end"><button class="btn sm primary" onclick="setReg(${u.user_id},'approved')">Approve</button><button class="btn sm danger" onclick="setReg(${u.user_id},'rejected')">Reject</button></div></td></tr>`).join('')
+        : `<tr><td colspan="6" class="empty">No pending student registrations.</td></tr>`}</tbody></table></div>
+    </section>`);
+  if (S.acct) loadTermStudent(S.acct);
+};
+
+function termSearch(w, q) {
+  clearTimeout(termTimers[w]);
+  termTimers[w] = setTimeout(async () => {
+    const list = $('tl' + w);
+    if (!list) return;
+    try {
+      const r = await api(`/api/staff/students?q=${encodeURIComponent(q.trim())}`);
+      list.innerHTML = r.students.length
+        ? r.students.map((s) => `<button type="button" class="ta-item" onclick="termPick(${s.user_id})"><span>${esc(s.full_name)}<br><small>${esc(s.student_or_emp_id)}</small></span>
+            <span class="num ${num(s.balance) > 0.01 ? 'text-bad' : 'text-ok'}">${num(s.balance) > 0.01 ? peso(s.balance) : 'Settled'}</span></button>`).join('')
+        : `<div class="empty" style="padding:1rem">No approved student matches “${esc(q)}”.</div>`;
+      list.classList.remove('hidden');
+    } catch (e) { toast(e.message, 'error'); }
+  }, 220);
+}
+async function termKey(e, w) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  clearTimeout(termTimers[w]);
+  try {
+    const r = await api(`/api/staff/students?q=${encodeURIComponent(e.target.value.trim())}`);
+    if (r.students.length) termPick(r.students[0].user_id);
+    else toast('No approved student matches that search.', 'error');
+  } catch (err) { toast(err.message, 'error'); }
+}
+document.addEventListener('click', (e) => {
+  document.querySelectorAll('.ta-list').forEach((l) => { if (!l.parentElement.contains(e.target)) l.classList.add('hidden'); });
+});
+
+// Picking a student in either panel updates both.
+function termPick(id) {
+  document.querySelectorAll('.ta-list').forEach((l) => l.classList.add('hidden'));
+  S.acct = id;
+  loadTermStudent(id);
+}
+
+async function loadTermStudent(id) {
+  const box = $('tpBox');
+  if (!box) return;
+  box.innerHTML = '<div class="skeleton" style="height:140px"></div>';
+  try {
+    const d = (S.acctData = await api(`/api/staff/students/${id}/account`));
+    const label = `${d.student.full_name} (${d.student.student_or_emp_id})`;
+    ['Issue', 'Pay'].forEach((w) => { if ($('tin' + w)) $('tin' + w).value = label; });
+    $('tbWho').textContent = `${d.student.year_level ? 'Year ' + d.student.year_level + ' · ' : ''}Current balance ${peso(d.current_balance)}`;
+    box.innerHTML = termPayHTML(d);
+  } catch (e) { box.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
+}
+
+function termPayHTML(d) {
+  const open = d.bills.filter((b) => num(b.amount) - num(b.paid) > 0.01);
+  const pending = d.payments.filter((p) => p.status === 'pending');
+  const first = open[0];
+  const rem0 = first ? num(first.amount) - num(first.paid) : 0;
+  const admin = me.role === 'admin';
+  const recent = d.payments.slice(0, 6);
+  return `
+    <div class="owe-banner ${d.current_balance > 0.01 ? '' : 'clear'}"><span>${d.current_balance > 0.01 ? 'Total outstanding' : 'Nothing owed'}</span><strong>${peso(d.current_balance)}</strong></div>
+    ${pending.length ? `<div class="note">${pending.length} payment${pending.length === 1 ? '' : 's'} submitted by this student ${pending.length === 1 ? 'is' : 'are'} waiting for your check. See Recent payments below.</div>` : ''}
+    ${open.length ? `<form onsubmit="submitForm(event, doTermPay)">
+      <label class="field"><span>Fee / item to pay</span><select name="bill_id" id="tpBill" onchange="termBillPick(this)" required>
+        ${open.map((b) => { const r = num(b.amount) - num(b.paid); return `<option value="${b.bill_id}" data-rem="${r.toFixed(2)}">${esc(b.title)} — remaining ${peso(r)}${isOverdue(b) ? ' (overdue)' : ''}</option>`; }).join('')}
+      </select></label>
+      <div class="grid2">
+        <label class="field"><span>Amount paying (₱)</span><input name="amount_paid" id="tpAmount" type="number" step="0.01" min="0.01" max="${rem0.toFixed(2)}" value="${rem0.toFixed(2)}" oninput="termChange()" required /></label>
+        <label class="field"><span>Payment method</span><select name="payment_method" id="tpMethod" onchange="termMethodChange()"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank">Bank transfer</option></select></label>
+      </div>
+      <label class="field" id="tpCashRow"><span>Cash received (₱) <small>(optional, to work out change)</small></span><input id="tpCash" type="number" step="0.01" min="0" oninput="termChange()" /></label>
+      <p class="change-line" id="tpChange"></p>
+      <label class="field hidden" id="tpRefRow"><span>Reference number <small>(optional)</small></span><input name="reference_no" placeholder="From the GCash or bank receipt" /></label>
+      <button class="btn primary block" type="submit">Confirm payment &amp; print receipt</button>
+    </form>` : `<p class="text-ok" style="font-weight:600">No unpaid bills for this student.</p>`}
+    <h4>Recent payments</h4>
+    ${recent.length ? `<ul class="mini-list">${recent.map((p) => `<li>
+      <span>${p.status === 'confirmed' ? `<strong>${orNo(p.payment_id)}</strong> · ` : ''}${peso(p.amount_paid)} · ${esc(methodLabel(p.payment_method))}<br><small>${esc(p.bill_title)} · ${fmtDT(p.payment_date)}</small></span>
+      <span class="row-actions" style="flex-wrap:nowrap;align-items:center">${chip(p.status)}
+        ${p.status === 'confirmed' ? `<button class="btn sm" onclick="showReceipt(${p.payment_id})">Receipt</button>` : ''}
+        ${p.status === 'pending' ? `<button class="btn sm primary" onclick="confirmPending(${p.payment_id})">Confirm</button><button class="btn sm danger" onclick="rejectPending(${p.payment_id})">Reject</button>` : ''}
+        ${admin && p.status === 'confirmed' ? `<button class="btn sm danger" onclick="openVoid(${p.payment_id})">Void</button>` : ''}</span></li>`).join('')}</ul>`
+      : `<p class="muted">No payments yet.</p>`}`;
+}
+
+function termBillPick(sel) {
+  const o = sel.options[sel.selectedIndex];
+  if (!o) return;
+  $('tpAmount').value = o.dataset.rem;
+  $('tpAmount').max = o.dataset.rem;
+  termChange();
+}
+function termMethodChange() {
+  const cash = $('tpMethod').value === 'cash';
+  $('tpCashRow').classList.toggle('hidden', !cash);
+  $('tpRefRow').classList.toggle('hidden', cash);
+  termChange();
+}
+function termChange() {
+  const out = $('tpChange');
+  if (!out) return;
+  const due = num($('tpAmount').value);
+  const got = $('tpMethod').value === 'cash' ? num($('tpCash').value) : 0;
+  out.className = 'change-line' + (got ? (got >= due ? ' ok' : ' short') : '');
+  out.textContent = got ? (got >= due ? `Change to give: ${peso(got - due)}` : `Short by ${peso(due - got)}`) : '';
+}
+function termFeePick(sel) {
+  const o = sel.options[sel.selectedIndex];
+  if (!o || !o.value) return;
+  const names = Array.from(sel.options).map((x) => x.dataset.name).filter(Boolean);
+  if (!$('tbTitle').value || names.includes($('tbTitle').value)) $('tbTitle').value = o.dataset.name;
+  if (o.dataset.amt) $('tbAmount').value = o.dataset.amt;
+}
+
+async function doTermPay(fd) {
+  const sel = $('tpBill');
+  const rem = num(sel.options[sel.selectedIndex].dataset.rem);
+  const amt = num(fd.get('amount_paid'));
+  if (amt > rem + 0.01) throw new Error(`The amount is more than the remaining balance of ${peso(rem)}.`);
+  if (fd.get('payment_method') === 'cash' && num($('tpCash').value) && num($('tpCash').value) < amt) throw new Error('The cash received is less than the amount being paid.');
+  const r = await post('/api/payments', { bill_id: fd.get('bill_id'), amount_paid: fd.get('amount_paid'), payment_method: fd.get('payment_method'), reference_no: fd.get('reference_no') });
+  toast(r.message);
+  showReceiptObj(r.receipt);
+  loadTermStudent(S.acct);
+  termKpis();
+}
+
+async function doTermIssue(fd, form) {
+  if (!S.acct) throw new Error('Pick a student first.');
+  const who = S.acctData ? S.acctData.student.full_name : 'this student';
+  if (!(await ask('Issue bill', `Bill ${peso(fd.get('amount'))} for "${fd.get('title')}" to ${who}?`, 'Issue bill'))) return;
+  const r = await post('/api/staff/bills', { user_id: S.acct, fee_type_id: fd.get('fee_type_id'), title: fd.get('title'), amount: fd.get('amount'), due_period: fd.get('due_period') });
+  toast(r.message);
+  form.reset();
+  loadTermStudent(S.acct);
+  termKpis();
+}
+
+async function termKpis() {
+  try {
+    const s = await api('/api/staff/stats');
+    S.badges = { pay: s.pending_payments, reg: s.pending_registrations };
+    renderNav();
+    const set = (id, v) => { if ($(id)) $(id).textContent = v; };
+    set('tkToday', peso(s.collected_today));
+    set('tkCount', `${s.transactions_today} transaction${s.transactions_today === 1 ? '' : 's'}`);
+    set('tkOut', peso(s.outstanding));
+    set('tkOver', `${s.overdue_bills} overdue bill${s.overdue_bills === 1 ? '' : 's'}`);
+    set('tkPend', s.pending_payments);
+    set('tkReg', s.pending_registrations);
+  } catch (e) {}
 }
 
 // ---------- student accounts (cashier counter) ----------
@@ -688,7 +904,8 @@ VIEWS.transactions = function () {
     </form><div id="txnBody"></div></section>`);
   loadTransactions();
 };
-const txnQuery = () => new URLSearchParams({ from: $('fFrom').value, to: $('fTo').value, status: $('fStatus').value, q: $('fQ').value }).toString();
+const fv = (id) => ($(id) ? $(id).value : '');
+const txnQuery = () => new URLSearchParams({ from: fv('fFrom'), to: fv('fTo'), status: fv('fStatus'), q: fv('fQ') }).toString();
 
 async function loadTransactions() {
   const box = $('txnBody');
