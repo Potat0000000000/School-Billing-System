@@ -1,9 +1,11 @@
 {
-  "name": "Torres Capitol College Billing System",
+  "name": "Torres Capitol College Billing & Payments",
   "short_name": "TCC Billing",
-  "description": "School Billing and Payment Portal",
+  "description": "School billing and payment portal",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0f172a",
-  "theme_color": "#0f172a"
+  "background_color": "#0e2238",
+  "theme_color": "#0e2238",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
 }

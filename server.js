@@ -10,6 +10,12 @@ const path = require('path');
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'same-origin');
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_only_secret_change_me';
@@ -28,6 +34,7 @@ const db = new Pool({
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const peso = (n) => Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const orNo = (id) => 'OR-' + String(id).padStart(5, '0');
+const fail = (res, err, code = 500) => res.status(code).json({ success: false, error: err && err.message ? err.message : String(err) });
 
 const YEAR_LEVEL_FEES = {
   1: { amount: 5000.0, title: '1st Year Base Tuition & Unit Fees' },
@@ -35,6 +42,32 @@ const YEAR_LEVEL_FEES = {
   3: { amount: 6000.0, title: '3rd Year Base Tuition & Unit Fees' },
   4: { amount: 6500.0, title: '4th Year Base Tuition & Unit Fees' }
 };
+
+// Bills are due at exam periods of the active semester, not on a free-form date.
+const PERIODS = { prelim: 'Prelims', midterm: 'Midterms', prefinal: 'Pre-Finals', finals: 'Finals' };
+const MANILA_TODAY = `(now() AT TIME ZONE 'Asia/Manila')::date`;
+const pDay = `(p.payment_date AT TIME ZONE 'Asia/Manila')::date`;
+
+const TERM_COLS = `term_id, label, is_active,
+  to_char(prelim_date,'YYYY-MM-DD') AS prelim, to_char(midterm_date,'YYYY-MM-DD') AS midterm,
+  to_char(prefinal_date,'YYYY-MM-DD') AS prefinal, to_char(finals_date,'YYYY-MM-DD') AS finals`;
+
+async function activeTerm() {
+  try {
+    const r = await db.query(`SELECT ${TERM_COLS} FROM academic_terms WHERE is_active = true LIMIT 1`);
+    return r.rows[0] || null;
+  } catch (e) {
+    return null; // migration not run yet
+  }
+}
+
+async function audit(actorId, action, detail) {
+  try {
+    await db.query(`INSERT INTO audit_logs (actor_id, action, detail) VALUES ($1, $2, $3)`, [actorId || null, action, detail || null]);
+  } catch (e) {
+    console.error('Audit error:', e.message);
+  }
+}
 
 // Only CONFIRMED payments count toward a bill
 async function getPaidTotal(billId) {
@@ -48,11 +81,35 @@ async function getPaidTotal(billId) {
 async function refreshBillStatus(billId, billAmount) {
   const paid = await getPaidTotal(billId);
   const status = paid >= billAmount - 0.01 ? 'paid' : paid > 0 ? 'partially_paid' : 'unpaid';
-  await db.query(`UPDATE bills SET status = $1 WHERE bill_id = $2`, [status, billId]);
+  await db.query(`UPDATE bills SET status = $1 WHERE bill_id = $2 AND status <> 'cancelled'`, [status, billId]);
+}
+
+async function studentSummary(studentId) {
+  const s = (await db.query(
+    `SELECT user_id, student_or_emp_id, full_name, email, status, year_level FROM users WHERE user_id = $1`,
+    [studentId]
+  )).rows[0];
+  if (!s) return null;
+
+  const bills = await db.query(
+    `SELECT b.bill_id, b.title, b.amount, b.status, b.due_period, to_char(b.due_date,'YYYY-MM-DD') AS due_date, f.name AS category,
+            COALESCE((SELECT SUM(p.amount_paid) FROM payments p WHERE p.bill_id = b.bill_id AND p.status = 'confirmed'), 0) AS paid
+     FROM bills b LEFT JOIN fee_types f ON b.fee_type_id = f.fee_type_id
+     WHERE b.student_id = $1 AND b.status <> 'cancelled' ORDER BY b.bill_id`,
+    [studentId]
+  );
+  const payments = await db.query(
+    `SELECT p.payment_id, p.bill_id, p.amount_paid, p.payment_method, p.payment_date, p.status, p.reference_no, b.title AS bill_title
+     FROM payments p JOIN bills b ON b.bill_id = p.bill_id
+     WHERE p.student_id = $1 ORDER BY p.payment_date DESC`,
+    [studentId]
+  );
+  const balance = bills.rows.reduce((sum, b) => sum + (parseFloat(b.amount) - parseFloat(b.paid)), 0);
+  return { student: s, current_balance: balance, bills: bills.rows, payments: payments.rows };
 }
 
 // ==========================================
-// EMAIL RECEIPTS
+// EMAIL + RECEIPTS
 // ==========================================
 const transporter =
   process.env.EMAIL_USER && process.env.EMAIL_PASS
@@ -62,29 +119,70 @@ const transporter =
       })
     : null;
 
+async function buildReceipt(paymentId) {
+  const r = await db.query(
+    `SELECT p.payment_id, p.student_id, p.amount_paid, p.payment_method, p.payment_date, p.reference_no, p.status,
+            s.email, s.full_name, s.student_or_emp_id, b.bill_id, b.title, b.amount AS bill_amount,
+            f.name AS category, c.full_name AS cashier_name
+     FROM payments p
+     JOIN users s ON s.user_id = p.student_id
+     JOIN bills b ON b.bill_id = p.bill_id
+     LEFT JOIN fee_types f ON f.fee_type_id = b.fee_type_id
+     LEFT JOIN users c ON c.user_id = p.cashier_id
+     WHERE p.payment_id = $1`,
+    [paymentId]
+  );
+  const p = r.rows[0];
+  if (!p) return null;
+  const paid = await getPaidTotal(p.bill_id);
+  return {
+    payment_id: p.payment_id,
+    student_id: p.student_id,
+    status: p.status,
+    email: p.email,
+    or_no: orNo(p.payment_id),
+    date: p.payment_date,
+    amount: parseFloat(p.amount_paid),
+    method: p.payment_method,
+    reference_no: p.reference_no,
+    student_name: p.full_name,
+    student_no: p.student_or_emp_id,
+    bill_title: p.title,
+    category: p.category,
+    bill_amount: parseFloat(p.bill_amount),
+    bill_balance: Math.max(0, parseFloat(p.bill_amount) - paid),
+    received_by: p.cashier_name || 'Business Office'
+  };
+}
+
 async function sendReceiptEmail(to, r) {
   if (!transporter || !to) return;
+  const row = (k, v) => `<tr><td style="padding:6px 0;color:#64707f">${k}</td><td style="padding:6px 0;text-align:right"><strong>${v}</strong></td></tr>`;
   const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px; border: 1px solid #e2e8f0; border-radius: 8px;">
-      <h2 style="color: #0f172a; text-align: center; margin-bottom: 5px;">🏫 Official Payment Receipt</h2>
-      <p style="text-align: center; color: #64748b; font-size: 0.9rem; margin-top: 0;">Torres Capitol College Billing</p>
-      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 15px 0;">
-      <p>Dear <strong>${esc(r.student_name)}</strong>,</p>
-      <p>Your payment has been confirmed.</p>
-      <div style="background-color: #f8fafc; padding: 15px; border-radius: 6px; margin: 15px 0;">
-        <p style="margin: 5px 0;"><strong>Official Receipt No:</strong> ${esc(r.or_no)}</p>
-        <p style="margin: 5px 0;"><strong>Date & Time:</strong> ${esc(new Date(r.date).toLocaleString('en-PH'))}</p>
-        <p style="margin: 5px 0;"><strong>Item Billed:</strong> ${esc(r.bill_title)}</p>
-        <p style="margin: 5px 0;"><strong>Payment Method:</strong> ${esc(String(r.method).toUpperCase())}</p>
-        <p style="margin: 5px 0; font-size: 1.1rem; color: #16a34a;"><strong>Amount Paid:</strong> ₱${peso(r.amount)}</p>
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #e3e6eb;border-radius:8px;overflow:hidden">
+      <div style="background:#0e2238;color:#fff;padding:20px 24px">
+        <div style="font-size:18px;font-weight:bold">Torres Capitol College</div>
+        <div style="font-size:13px;opacity:.8">Business Office · Official Receipt</div>
       </div>
-      <p style="font-size: 0.85rem; color: #64748b; text-align: center;">Automated receipt. Please keep this email for your records.</p>
+      <div style="padding:24px">
+        <p>Dear <strong>${esc(r.student_name)}</strong>, your payment has been confirmed.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+          ${row('Receipt no.', esc(r.or_no))}
+          ${row('Date', esc(new Date(r.date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })))}
+          ${row('Item', esc(r.bill_title))}
+          ${row('Payment method', esc(String(r.method).toUpperCase()))}
+          ${r.reference_no ? row('Reference no.', esc(r.reference_no)) : ''}
+          ${row('Remaining on this item', '₱' + peso(r.bill_balance))}
+        </table>
+        <p style="font-size:20px;color:#1f7a5a;margin:18px 0 0"><strong>Amount paid: ₱${peso(r.amount)}</strong></p>
+        <p style="font-size:12px;color:#64707f;margin-top:24px">This is an automated receipt. You can also view or download it from your student portal.</p>
+      </div>
     </div>`;
   try {
     await transporter.sendMail({
       from: `"TCC Billing Office" <${process.env.EMAIL_USER}>`,
       to,
-      subject: `Official Receipt [${r.or_no}] - Payment Confirmed`,
+      subject: `Official Receipt ${r.or_no} - Payment confirmed`,
       html
     });
   } catch (err) {
@@ -92,26 +190,10 @@ async function sendReceiptEmail(to, r) {
   }
 }
 
-// Build the receipt for a confirmed payment and email it (awaited so Vercel doesn't cut it off)
+// Awaited so Vercel doesn't cut the email off
 async function finalizePayment(paymentId) {
-  const r = await db.query(
-    `SELECT p.payment_id, p.amount_paid, p.payment_method, p.payment_date, u.email, u.full_name, b.title
-     FROM payments p
-     JOIN users u ON u.user_id = p.student_id
-     JOIN bills b ON b.bill_id = p.bill_id
-     WHERE p.payment_id = $1`,
-    [paymentId]
-  );
-  const p = r.rows[0];
-  const receipt = {
-    or_no: orNo(p.payment_id),
-    date: p.payment_date,
-    amount: parseFloat(p.amount_paid),
-    method: p.payment_method,
-    student_name: p.full_name,
-    bill_title: p.title
-  };
-  await sendReceiptEmail(p.email, receipt);
+  const receipt = await buildReceipt(paymentId);
+  if (receipt) await sendReceiptEmail(receipt.email, receipt);
   return receipt;
 }
 
@@ -139,6 +221,19 @@ function requireRole(...roles) {
   };
 }
 
+const staff = [authenticateToken, requireRole('cashier', 'admin')];
+const adminOnly = [authenticateToken, requireRole('admin')];
+
+// Light brute-force protection (per server instance)
+const attempts = new Map();
+const tooMany = (key) => {
+  const now = Date.now();
+  const list = (attempts.get(key) || []).filter((t) => now - t < 15 * 60 * 1000);
+  attempts.set(key, list);
+  return list.length >= 8;
+};
+const noteFail = (key) => attempts.set(key, [...(attempts.get(key) || []), Date.now()]);
+
 // ==========================================
 // AUTH ROUTES
 // ==========================================
@@ -152,6 +247,7 @@ app.post('/api/auth/register', async (req, res) => {
     return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
   }
 
+  const term = await activeTerm();
   const client = await db.connect();
   try {
     await client.query('BEGIN');
@@ -173,30 +269,31 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(500).json({ success: false, error: 'No fee type exists yet. Ask the admin to add one.' });
     }
 
+    const yl = YEAR_LEVEL_FEES[parseInt(year_level)] ? parseInt(year_level) : 1;
     const hashedPassword = await bcrypt.hash(password, 10);
     const userResult = await client.query(
-      `INSERT INTO users (student_or_emp_id, full_name, email, password, role, status)
-       VALUES ($1, $2, $3, $4, 'student', 'pending') RETURNING user_id`,
-      [student_id.trim(), full_name.trim(), email.trim(), hashedPassword]
+      `INSERT INTO users (student_or_emp_id, full_name, email, password, role, status, year_level)
+       VALUES ($1, $2, $3, $4, 'student', 'pending', $5) RETURNING user_id`,
+      [student_id.trim(), full_name.trim(), email.trim(), hashedPassword, yl]
     );
     const newUserId = userResult.rows[0].user_id;
 
-    const feeInfo = YEAR_LEVEL_FEES[parseInt(year_level)] || YEAR_LEVEL_FEES[1];
+    const feeInfo = YEAR_LEVEL_FEES[yl];
     const issuers = await client.query(`SELECT user_id FROM users WHERE role IN ('admin', 'cashier') LIMIT 1`);
     const issuerId = issuers.rows.length ? issuers.rows[0].user_id : newUserId;
 
     await client.query(
-      `INSERT INTO bills (student_id, fee_type_id, title, amount, status, issued_by)
-       VALUES ($1, $2, $3, $4, 'unpaid', $5)`,
-      [newUserId, feeTypes.rows[0].fee_type_id, feeInfo.title, feeInfo.amount, issuerId]
+      `INSERT INTO bills (student_id, fee_type_id, title, amount, status, due_date, issued_by, term_id, due_period)
+       VALUES ($1, $2, $3, $4, 'unpaid', $5, $6, $7, 'finals')`,
+      [newUserId, feeTypes.rows[0].fee_type_id, feeInfo.title, feeInfo.amount, term ? term.finals : null, issuerId, term ? term.term_id : null]
     );
 
     await client.query('COMMIT');
-    res.json({ success: true, message: 'Registration submitted! Please wait for admin approval.' });
+    res.json({ success: true, message: 'Registration submitted. You can sign in once the business office approves your account.' });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (e) {}
     console.error('Registration error:', err);
-    res.status(500).json({ success: false, error: 'Server error creating account: ' + err.message });
+    fail(res, 'Server error creating account: ' + err.message);
   } finally {
     client.release();
   }
@@ -207,7 +304,11 @@ app.post('/api/auth/login', async (req, res) => {
   const loginId = (identifier || email || '').trim();
 
   if (!loginId || !password) {
-    return res.status(400).json({ success: false, error: 'Email or Student ID and password are required.' });
+    return res.status(400).json({ success: false, error: 'Enter your email or Student ID and your password.' });
+  }
+  const key = `${req.ip}|${loginId.toLowerCase()}`;
+  if (tooMany(key)) {
+    return res.status(429).json({ success: false, error: 'Too many failed attempts. Try again in 15 minutes.' });
   }
 
   try {
@@ -216,22 +317,19 @@ app.post('/api/auth/login', async (req, res) => {
        FROM users WHERE LOWER(email) = LOWER($1) OR student_or_emp_id = $1`,
       [loginId]
     );
-    if (!result.rows.length) {
-      return res.status(401).json({ success: false, error: 'Invalid Email/Student ID or password.' });
-    }
-
     const user = result.rows[0];
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(401).json({ success: false, error: 'Invalid Email/Student ID or password.' });
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      noteFail(key);
+      return res.status(401).json({ success: false, error: 'Incorrect email/Student ID or password.' });
     }
     if (user.status === 'pending') {
-      return res.status(403).json({ success: false, error: 'Your registration is pending admin approval.' });
+      return res.status(403).json({ success: false, error: 'Your registration is still waiting for approval.' });
     }
     if (user.status === 'rejected') {
-      return res.status(403).json({ success: false, error: 'Your account request was rejected.' });
+      return res.status(403).json({ success: false, error: 'This account is not active. Contact the business office.' });
     }
 
+    attempts.delete(key);
     const token = jwt.sign(
       { user_id: user.user_id, student_or_emp_id: user.student_or_emp_id, full_name: user.full_name, role: user.role },
       JWT_SECRET,
@@ -240,11 +338,39 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({
       success: true,
       token,
-      user: { user_id: user.user_id, student_or_emp_id: user.student_or_emp_id, full_name: user.full_name, role: user.role }
+      user: { user_id: user.user_id, student_or_emp_id: user.student_or_emp_id, full_name: user.full_name, email: user.email, role: user.role }
     });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
+  }
+});
+
+app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+  const { current_password, new_password } = req.body;
+  if (!new_password || new_password.length < 6) {
+    return res.status(400).json({ success: false, error: 'New password must be at least 6 characters.' });
+  }
+  try {
+    const u = (await db.query(`SELECT password FROM users WHERE user_id = $1`, [req.user.user_id])).rows[0];
+    if (!u || !(await bcrypt.compare(current_password || '', u.password))) {
+      return res.status(400).json({ success: false, error: 'Your current password is incorrect.' });
+    }
+    await db.query(`UPDATE users SET password = $1 WHERE user_id = $2`, [await bcrypt.hash(new_password, 10), req.user.user_id]);
+    await audit(req.user.user_id, 'password.change', 'Changed own password');
+    res.json({ success: true, message: 'Password updated.' });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Fee types, active term and due periods for forms
+app.get('/api/meta', authenticateToken, async (req, res) => {
+  try {
+    const ft = await db.query('SELECT * FROM fee_types ORDER BY fee_type_id');
+    res.json({ success: true, fee_types: ft.rows, term: await activeTerm(), periods: PERIODS });
+  } catch (err) {
+    fail(res, err);
   }
 });
 
@@ -254,28 +380,14 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/student/:id/summary', authenticateToken, async (req, res) => {
   const studentId = parseInt(req.params.id);
   if (req.user.role === 'student' && parseInt(req.user.user_id) !== studentId) {
-    return res.status(403).json({ error: 'Access denied to this student summary.' });
+    return res.status(403).json({ success: false, error: 'Access denied to this student summary.' });
   }
-
   try {
-    const bills = await db.query(
-      `SELECT b.bill_id, b.title, b.amount, b.status, b.due_date, f.name AS category,
-              COALESCE((SELECT SUM(p.amount_paid) FROM payments p WHERE p.bill_id = b.bill_id AND p.status = 'confirmed'), 0) AS paid
-       FROM bills b LEFT JOIN fee_types f ON b.fee_type_id = f.fee_type_id
-       WHERE b.student_id = $1 ORDER BY b.bill_id`,
-      [studentId]
-    );
-    const payments = await db.query(
-      `SELECT p.payment_id, p.bill_id, p.amount_paid, p.payment_method, p.payment_date, p.status, p.reference_no, b.title AS bill_title
-       FROM payments p JOIN bills b ON b.bill_id = p.bill_id
-       WHERE p.student_id = $1 ORDER BY p.payment_date DESC`,
-      [studentId]
-    );
-
-    const balance = bills.rows.reduce((sum, b) => sum + (parseFloat(b.amount) - parseFloat(b.paid)), 0);
-    res.json({ current_balance: balance, bills: bills.rows, payments: payments.rows });
+    const s = await studentSummary(studentId);
+    if (!s) return res.status(404).json({ success: false, error: 'Student not found.' });
+    res.json({ success: true, ...s, term: await activeTerm() });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    fail(res, err);
   }
 });
 
@@ -286,15 +398,21 @@ app.post('/api/student/payments', authenticateToken, requireRole('student'), asy
   if (!bill_id || isNaN(amt) || amt <= 0) {
     return res.status(400).json({ success: false, error: 'Choose a bill and enter a valid amount.' });
   }
+  if (payment_method !== 'Business Office' && !(reference_no || '').trim()) {
+    return res.status(400).json({ success: false, error: 'Enter the reference number from your GCash or bank receipt.' });
+  }
 
   try {
-    const b = (await db.query(`SELECT bill_id, amount FROM bills WHERE bill_id = $1 AND student_id = $2`, [bill_id, req.user.user_id])).rows[0];
+    const b = (await db.query(
+      `SELECT bill_id, amount FROM bills WHERE bill_id = $1 AND student_id = $2 AND status <> 'cancelled'`,
+      [bill_id, req.user.user_id]
+    )).rows[0];
     if (!b) return res.status(404).json({ success: false, error: 'Bill not found.' });
 
     const remaining = parseFloat(b.amount) - (await getPaidTotal(b.bill_id));
     if (remaining <= 0.01) return res.status(400).json({ success: false, error: 'This bill is already fully paid.' });
     if (amt > remaining + 0.01) {
-      return res.status(400).json({ success: false, error: `Amount exceeds remaining balance of ₱${peso(remaining)}.` });
+      return res.status(400).json({ success: false, error: `Amount exceeds the remaining balance of ₱${peso(remaining)}.` });
     }
 
     await db.query(
@@ -302,80 +420,126 @@ app.post('/api/student/payments', authenticateToken, requireRole('student'), asy
        VALUES ($1, $2, NULL, $3, $4, 'pending', $5)`,
       [b.bill_id, req.user.user_id, amt, payment_method || 'GCash', (reference_no || '').trim() || null]
     );
-    res.json({ success: true, message: 'Payment submitted! A cashier will verify it and send your receipt.' });
+    res.json({ success: true, message: 'Payment submitted. A cashier will verify it and send your receipt.' });
   } catch (err) {
     console.error('Student payment error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-// ==========================================
-// CASHIER / ADMIN ROUTES
-// ==========================================
-const cashierOrAdmin = [authenticateToken, requireRole('cashier', 'admin')];
-const adminOnly = [authenticateToken, requireRole('admin')];
-
-// Find a student by Student ID number and list their unpaid bills
-app.get('/api/cashier/lookup', ...cashierOrAdmin, async (req, res) => {
-  const studentNo = (req.query.student_no || '').trim();
-  if (!studentNo) return res.status(400).json({ success: false, error: 'Enter a Student ID.' });
-
+// Receipt for one confirmed payment (students can only open their own)
+app.get('/api/payments/:id/receipt', authenticateToken, async (req, res) => {
   try {
-    const u = (await db.query(
-      `SELECT user_id, student_or_emp_id, full_name FROM users WHERE student_or_emp_id = $1 AND role = 'student'`,
-      [studentNo]
-    )).rows[0];
-    if (!u) return res.status(404).json({ success: false, error: 'No student found with that ID.' });
-
-    const bills = await db.query(
-      `SELECT b.bill_id, b.title, b.amount,
-              b.amount - COALESCE((SELECT SUM(p.amount_paid) FROM payments p WHERE p.bill_id = b.bill_id AND p.status = 'confirmed'), 0) AS remaining
-       FROM bills b WHERE b.student_id = $1 AND b.status <> 'paid' ORDER BY b.bill_id`,
-      [u.user_id]
-    );
-    res.json({ success: true, student: u, bills: bills.rows });
+    const r = await buildReceipt(parseInt(req.params.id));
+    if (!r) return res.status(404).json({ success: false, error: 'Receipt not found.' });
+    if (req.user.role === 'student' && r.student_id !== parseInt(req.user.user_id)) {
+      return res.status(403).json({ success: false, error: 'Access denied.' });
+    }
+    if (r.status !== 'confirmed') return res.status(400).json({ success: false, error: 'Only confirmed payments have a receipt.' });
+    delete r.email;
+    res.json({ success: true, receipt: r });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-// Cashier records a counter payment (confirmed immediately)
-const payBill = async (req, res) => {
-  const { bill_id, amount_paid, payment_method } = req.body;
+// ==========================================
+// CASHIER / ADMIN: STUDENT ACCOUNTS
+// ==========================================
+app.get('/api/staff/students', ...staff, async (req, res) => {
+  const q = `%${(req.query.q || '').trim()}%`;
+  try {
+    const r = await db.query(
+      `SELECT u.user_id, u.student_or_emp_id, u.full_name, u.email, u.year_level,
+         (SELECT COALESCE(SUM(b.amount), 0) FROM bills b WHERE b.student_id = u.user_id AND b.status <> 'cancelled')
+         - (SELECT COALESCE(SUM(p.amount_paid), 0) FROM payments p JOIN bills b ON b.bill_id = p.bill_id
+            WHERE p.student_id = u.user_id AND p.status = 'confirmed' AND b.status <> 'cancelled') AS balance
+       FROM users u
+       WHERE u.role = 'student' AND u.status = 'approved' AND (u.full_name ILIKE $1 OR u.student_or_emp_id ILIKE $1)
+       ORDER BY u.full_name LIMIT 15`,
+      [q]
+    );
+    res.json({ success: true, students: r.rows });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.get('/api/staff/students/:id/account', ...staff, async (req, res) => {
+  try {
+    const s = await studentSummary(parseInt(req.params.id));
+    if (!s) return res.status(404).json({ success: false, error: 'Student not found.' });
+    res.json({ success: true, ...s });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Issue a bill. Due date comes from the active semester's exam period.
+app.post('/api/staff/bills', ...staff, async (req, res) => {
+  const { user_id, fee_type_id, title, amount, due_period } = req.body;
+  const amt = parseFloat(amount);
+  const period = PERIODS[due_period] ? due_period : 'finals';
+  if (!user_id || !title || isNaN(amt) || amt <= 0) {
+    return res.status(400).json({ success: false, error: 'Student, title and a valid amount are required.' });
+  }
+  try {
+    const u = (await db.query(`SELECT user_id, full_name FROM users WHERE user_id = $1 AND role = 'student'`, [user_id])).rows[0];
+    if (!u) return res.status(404).json({ success: false, error: 'Student not found.' });
+
+    let feeTypeId = fee_type_id;
+    if (!feeTypeId) {
+      const ft = await db.query(`SELECT fee_type_id FROM fee_types ORDER BY fee_type_id LIMIT 1`);
+      if (!ft.rows.length) return res.status(400).json({ success: false, error: 'Add a fee type first.' });
+      feeTypeId = ft.rows[0].fee_type_id;
+    }
+    const term = await activeTerm();
+    await db.query(
+      `INSERT INTO bills (student_id, fee_type_id, title, amount, status, due_date, issued_by, term_id, due_period)
+       VALUES ($1, $2, $3, $4, 'unpaid', $5, $6, $7, $8)`,
+      [u.user_id, feeTypeId, title.trim(), amt, term ? term[period] : null, req.user.user_id, term ? term.term_id : null, period]
+    );
+    await audit(req.user.user_id, 'bill.issue', `${title.trim()} ₱${peso(amt)} → ${u.full_name} (due ${PERIODS[period]})`);
+    res.json({ success: true, message: `Billed ₱${peso(amt)} for "${title.trim()}".` });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Counter payment, confirmed immediately
+app.post('/api/payments', ...staff, async (req, res) => {
+  const { bill_id, amount_paid, payment_method, reference_no } = req.body;
   const amt = parseFloat(amount_paid);
   if (!bill_id || isNaN(amt) || amt <= 0) {
     return res.status(400).json({ success: false, error: 'Valid bill and payment amount are required.' });
   }
-
   try {
-    const b = (await db.query(`SELECT bill_id, student_id, amount FROM bills WHERE bill_id = $1`, [bill_id])).rows[0];
-    if (!b) return res.status(404).json({ success: false, error: 'Bill not found.' });
+    const b = (await db.query(`SELECT bill_id, student_id, amount, status FROM bills WHERE bill_id = $1`, [bill_id])).rows[0];
+    if (!b || b.status === 'cancelled') return res.status(404).json({ success: false, error: 'Bill not found.' });
 
     const remaining = parseFloat(b.amount) - (await getPaidTotal(b.bill_id));
     if (remaining <= 0.01) return res.status(400).json({ success: false, error: 'This bill is already fully paid.' });
     if (amt > remaining + 0.01) {
-      return res.status(400).json({ success: false, error: `Payment exceeds remaining balance of ₱${peso(remaining)}.` });
+      return res.status(400).json({ success: false, error: `Payment exceeds the remaining balance of ₱${peso(remaining)}.` });
     }
 
     const ins = await db.query(
-      `INSERT INTO payments (bill_id, student_id, cashier_id, amount_paid, payment_method, status)
-       VALUES ($1, $2, $3, $4, $5, 'confirmed') RETURNING payment_id`,
-      [b.bill_id, b.student_id, req.user.user_id, amt, payment_method || 'cash']
+      `INSERT INTO payments (bill_id, student_id, cashier_id, amount_paid, payment_method, status, reference_no)
+       VALUES ($1, $2, $3, $4, $5, 'confirmed', $6) RETURNING payment_id`,
+      [b.bill_id, b.student_id, req.user.user_id, amt, payment_method || 'cash', (reference_no || '').trim() || null]
     );
     await refreshBillStatus(b.bill_id, parseFloat(b.amount));
     const receipt = await finalizePayment(ins.rows[0].payment_id);
-
-    res.json({ success: true, message: `Payment of ₱${peso(amt)} recorded.`, payment_id: ins.rows[0].payment_id, receipt });
+    await audit(req.user.user_id, 'payment.record', `${receipt.or_no} ₱${peso(amt)} from ${receipt.student_name}`);
+    delete receipt.email;
+    res.json({ success: true, message: `Payment of ₱${peso(amt)} recorded.`, receipt });
   } catch (err) {
     console.error('Payment error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
-};
-app.post('/api/payments', ...cashierOrAdmin, payBill);
-app.post('/api/cashier/pay-bill', ...cashierOrAdmin, payBill);
+});
 
-// Pending student payments waiting for verification
-app.get('/api/cashier/pending-payments', ...cashierOrAdmin, async (req, res) => {
+app.get('/api/cashier/pending-payments', ...staff, async (req, res) => {
   try {
     const r = await db.query(
       `SELECT p.payment_id, p.amount_paid, p.payment_method, p.reference_no, p.payment_date,
@@ -387,11 +551,11 @@ app.get('/api/cashier/pending-payments', ...cashierOrAdmin, async (req, res) => 
     );
     res.json({ success: true, payments: r.rows });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-app.post('/api/cashier/payments/:id/confirm', ...cashierOrAdmin, async (req, res) => {
+app.post('/api/cashier/payments/:id/confirm', ...staff, async (req, res) => {
   try {
     const p = (await db.query(
       `SELECT p.payment_id, p.status, p.amount_paid, b.bill_id, b.amount
@@ -409,93 +573,451 @@ app.post('/api/cashier/payments/:id/confirm', ...cashierOrAdmin, async (req, res
     await db.query(`UPDATE payments SET status = 'confirmed', cashier_id = $1 WHERE payment_id = $2`, [req.user.user_id, p.payment_id]);
     await refreshBillStatus(p.bill_id, parseFloat(p.amount));
     const receipt = await finalizePayment(p.payment_id);
-
+    await audit(req.user.user_id, 'payment.confirm', `${receipt.or_no} ₱${peso(receipt.amount)} from ${receipt.student_name}`);
+    delete receipt.email;
     res.json({ success: true, message: 'Payment confirmed and receipt emailed.', receipt });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-app.post('/api/cashier/payments/:id/reject', ...cashierOrAdmin, async (req, res) => {
+app.post('/api/cashier/payments/:id/reject', ...staff, async (req, res) => {
   try {
     const r = await db.query(
       `UPDATE payments SET status = 'rejected', cashier_id = $1 WHERE payment_id = $2 AND status = 'pending' RETURNING payment_id`,
       [req.user.user_id, req.params.id]
     );
     if (!r.rows.length) return res.status(400).json({ success: false, error: 'Payment not found or already processed.' });
+    await audit(req.user.user_id, 'payment.reject', `Payment #${req.params.id} rejected`);
     res.json({ success: true, message: 'Payment rejected.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-// Issue a new bill (student_id here is the Student ID NUMBER, e.g. 2024-0001)
-app.post('/api/cashier/add-bill', ...cashierOrAdmin, async (req, res) => {
-  const { student_id, title, amount, due_date, fee_type_id } = req.body;
-  const amt = parseFloat(amount);
-  if (!student_id || !title || isNaN(amt) || amt <= 0) {
-    return res.status(400).json({ success: false, error: 'Student ID, title and a valid amount are required.' });
+// ---- Transactions list + CSV export ----
+function paymentFilter(q) {
+  const where = ['1=1'];
+  const vals = [];
+  const add = (sql, v) => { vals.push(v); where.push(sql.replace('?', `$${vals.length}`)); };
+  if (q.from) add(`${pDay} >= ?::date`, q.from);
+  if (q.to) add(`${pDay} <= ?::date`, q.to);
+  if (q.status) add(`p.status = ?`, q.status);
+  if (q.q) {
+    vals.push(`%${q.q.trim()}%`);
+    const n = `$${vals.length}`;
+    where.push(`(s.full_name ILIKE ${n} OR s.student_or_emp_id ILIKE ${n} OR p.reference_no ILIKE ${n})`);
   }
+  return { where: where.join(' AND '), vals };
+}
+const PAY_FROM = `FROM payments p JOIN users s ON s.user_id = p.student_id JOIN bills b ON b.bill_id = p.bill_id
+                  LEFT JOIN users c ON c.user_id = p.cashier_id`;
 
+app.get('/api/staff/payments', ...staff, async (req, res) => {
   try {
-    const u = (await db.query(`SELECT user_id FROM users WHERE student_or_emp_id = $1 AND role = 'student'`, [student_id.trim()])).rows[0];
-    if (!u) return res.status(404).json({ success: false, error: 'No student found with that ID.' });
-
-    let feeTypeId = fee_type_id;
-    if (!feeTypeId) {
-      const ft = await db.query(`SELECT fee_type_id FROM fee_types ORDER BY fee_type_id LIMIT 1`);
-      if (!ft.rows.length) return res.status(400).json({ success: false, error: 'Add a fee type in Supabase first.' });
-      feeTypeId = ft.rows[0].fee_type_id;
-    }
-
-    await db.query(
-      `INSERT INTO bills (student_id, fee_type_id, title, amount, status, due_date, issued_by)
-       VALUES ($1, $2, $3, $4, 'unpaid', $5, $6)`,
-      [u.user_id, feeTypeId, title.trim(), amt, due_date || null, req.user.user_id]
+    const { where, vals } = paymentFilter(req.query);
+    const rows = await db.query(
+      `SELECT p.payment_id, p.amount_paid, p.payment_method, p.payment_date, p.status, p.reference_no,
+              s.full_name, s.student_or_emp_id, b.title, c.full_name AS cashier_name
+       ${PAY_FROM} WHERE ${where} ORDER BY p.payment_date DESC LIMIT 300`,
+      vals
     );
-    res.json({ success: true, message: `Bill "${title.trim()}" issued for ₱${peso(amt)}.` });
+    const tot = await db.query(
+      `SELECT COALESCE(SUM(p.amount_paid) FILTER (WHERE p.status = 'confirmed'), 0) AS total,
+              COUNT(*) FILTER (WHERE p.status = 'confirmed') AS confirmed_count
+       ${PAY_FROM} WHERE ${where}`,
+      vals
+    );
+    res.json({ success: true, payments: rows.rows, total: parseFloat(tot.rows[0].total), confirmed_count: parseInt(tot.rows[0].confirmed_count) });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-// ==========================================
-// ADMIN: APPROVE / REJECT REGISTRATIONS
-// ==========================================
-app.get('/api/admin/users', ...adminOnly, async (req, res) => {
-  const status = req.query.status || 'pending';
+app.get('/api/staff/payments.csv', ...staff, async (req, res) => {
+  try {
+    const { where, vals } = paymentFilter(req.query);
+    const rows = await db.query(
+      `SELECT p.payment_id, p.payment_date, s.student_or_emp_id, s.full_name, b.title, p.payment_method,
+              p.reference_no, p.amount_paid, p.status, c.full_name AS cashier_name
+       ${PAY_FROM} WHERE ${where} ORDER BY p.payment_date DESC`,
+      vals
+    );
+    const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const lines = [['Receipt No', 'Date', 'Student ID', 'Student', 'Bill', 'Method', 'Reference', 'Amount', 'Status', 'Received by'].join(',')];
+    rows.rows.forEach((r) =>
+      lines.push([
+        orNo(r.payment_id),
+        new Date(r.payment_date).toLocaleString('en-PH', { timeZone: 'Asia/Manila' }),
+        r.student_or_emp_id, r.full_name, r.title, r.payment_method, r.reference_no, r.amount_paid, r.status, r.cashier_name
+      ].map(cell).join(','))
+    );
+    res.set('Content-Type', 'text/csv; charset=utf-8');
+    res.set('Content-Disposition', 'attachment; filename="payments.csv"');
+    res.send('\ufeff' + lines.join('\n'));
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ---- Dashboard numbers ----
+app.get('/api/staff/stats', ...staff, async (req, res) => {
+  try {
+    const q = async (sql) => (await db.query(sql)).rows[0];
+    const today = await q(
+      `SELECT COALESCE(SUM(p.amount_paid), 0) AS total, COUNT(*) AS n FROM payments p
+       WHERE p.status = 'confirmed' AND ${pDay} = ${MANILA_TODAY}`
+    );
+    const open = await q(
+      `SELECT COALESCE(SUM(b.amount - COALESCE(x.paid, 0)), 0) AS outstanding,
+              COUNT(*) FILTER (WHERE b.due_date < ${MANILA_TODAY}) AS overdue
+       FROM bills b JOIN users u ON u.user_id = b.student_id AND u.status = 'approved'
+       LEFT JOIN (SELECT bill_id, SUM(amount_paid) AS paid FROM payments WHERE status = 'confirmed' GROUP BY bill_id) x ON x.bill_id = b.bill_id
+       WHERE b.status NOT IN ('paid', 'cancelled')`
+    );
+    const pend = await q(`SELECT COUNT(*) AS n FROM payments WHERE status = 'pending'`);
+    const regs = await q(`SELECT COUNT(*) AS n FROM users WHERE role = 'student' AND status = 'pending'`);
+    res.json({
+      success: true,
+      collected_today: parseFloat(today.total),
+      transactions_today: parseInt(today.n),
+      outstanding: parseFloat(open.outstanding),
+      overdue_bills: parseInt(open.overdue),
+      pending_payments: parseInt(pend.n),
+      pending_registrations: parseInt(regs.n)
+    });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ---- Registrations (cashier or admin can approve) ----
+app.get('/api/staff/registrations', ...staff, async (req, res) => {
   try {
     const r = await db.query(
-      `SELECT user_id, student_or_emp_id, full_name, email, role, status, created_at
-       FROM users WHERE status = $1 ORDER BY created_at`,
-      [status]
+      `SELECT user_id, student_or_emp_id, full_name, email, year_level, created_at
+       FROM users WHERE role = 'student' AND status = 'pending' ORDER BY created_at`
     );
     res.json({ success: true, users: r.rows });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
+  }
+});
+
+app.post('/api/staff/registrations/:id', ...staff, async (req, res) => {
+  const { status } = req.body;
+  if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ success: false, error: 'Invalid status.' });
+  try {
+    const r = await db.query(
+      `UPDATE users SET status = $1 WHERE user_id = $2 AND role = 'student' AND status = 'pending' RETURNING full_name`,
+      [status, req.params.id]
+    );
+    if (!r.rows.length) return res.status(400).json({ success: false, error: 'Registration not found or already handled.' });
+    await audit(req.user.user_id, `registration.${status}`, r.rows[0].full_name);
+    res.json({ success: true, message: `Registration ${status}.` });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ==========================================
+// ADMIN
+// ==========================================
+app.get('/api/admin/overview', ...adminOnly, async (req, res) => {
+  try {
+    const series = await db.query(
+      `SELECT to_char(d::date, 'YYYY-MM-DD') AS day, COALESCE(SUM(p.amount_paid), 0) AS total
+       FROM generate_series(${MANILA_TODAY} - 13, ${MANILA_TODAY}, interval '1 day') d
+       LEFT JOIN payments p ON p.status = 'confirmed' AND ${pDay} = d::date
+       GROUP BY d ORDER BY d`
+    );
+    const methods = await db.query(
+      `SELECT LOWER(payment_method) AS method, SUM(amount_paid) AS total, COUNT(*) AS n
+       FROM payments WHERE status = 'confirmed' GROUP BY 1 ORDER BY total DESC`
+    );
+    const categories = await db.query(
+      `SELECT COALESCE(f.name, 'Uncategorized') AS category, SUM(p.amount_paid) AS total
+       FROM payments p JOIN bills b ON b.bill_id = p.bill_id LEFT JOIN fee_types f ON f.fee_type_id = b.fee_type_id
+       WHERE p.status = 'confirmed' GROUP BY 1 ORDER BY total DESC`
+    );
+    const debtors = await db.query(
+      `SELECT u.user_id, u.full_name, u.student_or_emp_id,
+              SUM(b.amount - COALESCE(x.paid, 0)) AS owed
+       FROM bills b JOIN users u ON u.user_id = b.student_id AND u.status = 'approved'
+       LEFT JOIN (SELECT bill_id, SUM(amount_paid) AS paid FROM payments WHERE status = 'confirmed' GROUP BY bill_id) x ON x.bill_id = b.bill_id
+       WHERE b.status NOT IN ('paid', 'cancelled')
+       GROUP BY u.user_id, u.full_name, u.student_or_emp_id HAVING SUM(b.amount - COALESCE(x.paid, 0)) > 0
+       ORDER BY owed DESC LIMIT 6`
+    );
+    const allTime = await db.query(`SELECT COALESCE(SUM(amount_paid), 0) AS total FROM payments WHERE status = 'confirmed'`);
+    const counts = await db.query(`SELECT role, status, COUNT(*) AS n FROM users GROUP BY role, status`);
+    res.json({
+      success: true,
+      series: series.rows.map((r) => ({ day: r.day, total: parseFloat(r.total) })),
+      methods: methods.rows.map((r) => ({ method: r.method, total: parseFloat(r.total), n: parseInt(r.n) })),
+      categories: categories.rows.map((r) => ({ category: r.category, total: parseFloat(r.total) })),
+      debtors: debtors.rows.map((r) => ({ ...r, owed: parseFloat(r.owed) })),
+      collected_total: parseFloat(allTime.rows[0].total),
+      users: counts.rows.map((r) => ({ role: r.role, status: r.status, n: parseInt(r.n) }))
+    });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ---- Users & staff ----
+app.get('/api/admin/users', ...adminOnly, async (req, res) => {
+  const vals = [];
+  const where = ['1=1'];
+  if (req.query.role) { vals.push(req.query.role); where.push(`role = $${vals.length}`); }
+  if (req.query.status) { vals.push(req.query.status); where.push(`status = $${vals.length}`); }
+  if (req.query.q) { vals.push(`%${req.query.q.trim()}%`); where.push(`(full_name ILIKE $${vals.length} OR student_or_emp_id ILIKE $${vals.length} OR email ILIKE $${vals.length})`); }
+  try {
+    const r = await db.query(
+      `SELECT user_id, student_or_emp_id, full_name, email, role, status, year_level, created_at
+       FROM users WHERE ${where.join(' AND ')} ORDER BY role, full_name LIMIT 300`,
+      vals
+    );
+    res.json({ success: true, users: r.rows });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.post('/api/admin/users', ...adminOnly, async (req, res) => {
+  const { full_name, email, emp_id, role, password } = req.body;
+  if (!full_name || !email || !emp_id || !password || !['cashier', 'admin'].includes(role)) {
+    return res.status(400).json({ success: false, error: 'Name, email, employee ID, role and password are required.' });
+  }
+  if (password.length < 6) return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+  try {
+    const dup = await db.query(`SELECT 1 FROM users WHERE student_or_emp_id = $1 OR LOWER(email) = LOWER($2)`, [emp_id.trim(), email.trim()]);
+    if (dup.rows.length) return res.status(400).json({ success: false, error: 'That employee ID or email is already in use.' });
+    await db.query(
+      `INSERT INTO users (student_or_emp_id, full_name, email, password, role, status) VALUES ($1, $2, $3, $4, $5, 'approved')`,
+      [emp_id.trim(), full_name.trim(), email.trim(), await bcrypt.hash(password, 10), role]
+    );
+    await audit(req.user.user_id, 'user.create', `${role}: ${full_name.trim()}`);
+    res.json({ success: true, message: `${role === 'admin' ? 'Admin' : 'Cashier'} account created.` });
+  } catch (err) {
+    fail(res, err);
   }
 });
 
 app.post('/api/admin/users/:id/status', ...adminOnly, async (req, res) => {
   const { status } = req.body;
-  if (!['approved', 'rejected'].includes(status)) {
-    return res.status(400).json({ success: false, error: 'Invalid status.' });
+  if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ success: false, error: 'Invalid status.' });
+  if (parseInt(req.params.id) === parseInt(req.user.user_id)) {
+    return res.status(400).json({ success: false, error: 'You cannot change your own account status.' });
   }
   try {
-    await db.query(`UPDATE users SET status = $1 WHERE user_id = $2`, [status, req.params.id]);
-    res.json({ success: true, message: `User ${status}.` });
+    const r = await db.query(`UPDATE users SET status = $1 WHERE user_id = $2 RETURNING full_name`, [status, req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ success: false, error: 'User not found.' });
+    await audit(req.user.user_id, status === 'approved' ? 'user.activate' : 'user.deactivate', r.rows[0].full_name);
+    res.json({ success: true, message: status === 'approved' ? 'Account activated.' : 'Account deactivated.' });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    fail(res, err);
   }
 });
 
-// FEE TYPES
-app.get('/api/fee-types', authenticateToken, async (req, res) => {
+app.post('/api/admin/users/:id/password', ...adminOnly, async (req, res) => {
+  const { password } = req.body;
+  if (!password || password.length < 6) return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
   try {
-    const result = await db.query('SELECT * FROM fee_types ORDER BY fee_type_id');
-    res.json(result.rows);
+    const r = await db.query(`UPDATE users SET password = $1 WHERE user_id = $2 RETURNING full_name`, [await bcrypt.hash(password, 10), req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ success: false, error: 'User not found.' });
+    await audit(req.user.user_id, 'user.password_reset', r.rows[0].full_name);
+    res.json({ success: true, message: 'Password reset.' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch fee types' });
+    fail(res, err);
+  }
+});
+
+// ---- Fee types ----
+app.post('/api/admin/fee-types', ...adminOnly, async (req, res) => {
+  const { name, default_amount } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Enter a fee name.' });
+  const amt = default_amount === '' || default_amount == null ? null : parseFloat(default_amount);
+  try {
+    await db.query(`INSERT INTO fee_types (name, default_amount) VALUES ($1, $2)`, [name.trim(), amt]);
+    await audit(req.user.user_id, 'fee_type.create', name.trim());
+    res.json({ success: true, message: 'Fee type added.' });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.put('/api/admin/fee-types/:id', ...adminOnly, async (req, res) => {
+  const { name, default_amount } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ success: false, error: 'Enter a fee name.' });
+  const amt = default_amount === '' || default_amount == null ? null : parseFloat(default_amount);
+  try {
+    await db.query(`UPDATE fee_types SET name = $1, default_amount = $2 WHERE fee_type_id = $3`, [name.trim(), amt, req.params.id]);
+    await audit(req.user.user_id, 'fee_type.update', name.trim());
+    res.json({ success: true, message: 'Fee type updated.' });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.delete('/api/admin/fee-types/:id', ...adminOnly, async (req, res) => {
+  try {
+    const used = await db.query(`SELECT 1 FROM bills WHERE fee_type_id = $1 LIMIT 1`, [req.params.id]);
+    if (used.rows.length) return res.status(400).json({ success: false, error: 'This fee type is used by existing bills and can’t be deleted.' });
+    await db.query(`DELETE FROM fee_types WHERE fee_type_id = $1`, [req.params.id]);
+    await audit(req.user.user_id, 'fee_type.delete', `#${req.params.id}`);
+    res.json({ success: true, message: 'Fee type deleted.' });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ---- Academic terms (semester calendar) ----
+app.get('/api/terms', ...staff, async (req, res) => {
+  try {
+    const r = await db.query(`SELECT ${TERM_COLS} FROM academic_terms ORDER BY term_id DESC`);
+    res.json({ success: true, terms: r.rows });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.post('/api/admin/terms', ...adminOnly, async (req, res) => {
+  const { label, prelim, midterm, prefinal, finals, activate } = req.body;
+  if (!label || !prelim || !midterm || !prefinal || !finals) {
+    return res.status(400).json({ success: false, error: 'Enter a name and all four exam-period dates.' });
+  }
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    if (activate) await client.query(`UPDATE academic_terms SET is_active = false`);
+    await client.query(
+      `INSERT INTO academic_terms (label, prelim_date, midterm_date, prefinal_date, finals_date, is_active) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [label.trim(), prelim, midterm, prefinal, finals, !!activate]
+    );
+    await client.query('COMMIT');
+    await audit(req.user.user_id, 'term.create', label.trim());
+    res.json({ success: true, message: 'Semester added.' });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    fail(res, err);
+  } finally {
+    client.release();
+  }
+});
+
+// Editing dates also moves the due dates of every bill tied to that semester
+app.put('/api/admin/terms/:id', ...adminOnly, async (req, res) => {
+  const { label, prelim, midterm, prefinal, finals } = req.body;
+  if (!label || !prelim || !midterm || !prefinal || !finals) {
+    return res.status(400).json({ success: false, error: 'Enter a name and all four exam-period dates.' });
+  }
+  try {
+    await db.query(
+      `UPDATE academic_terms SET label = $1, prelim_date = $2, midterm_date = $3, prefinal_date = $4, finals_date = $5 WHERE term_id = $6`,
+      [label.trim(), prelim, midterm, prefinal, finals, req.params.id]
+    );
+    const moved = await db.query(
+      `UPDATE bills SET due_date = CASE due_period WHEN 'prelim' THEN $2::date WHEN 'midterm' THEN $3::date
+                                                   WHEN 'prefinal' THEN $4::date WHEN 'finals' THEN $5::date END
+       WHERE term_id = $1 AND due_period IN ('prelim', 'midterm', 'prefinal', 'finals')`,
+      [req.params.id, prelim, midterm, prefinal, finals]
+    );
+    await audit(req.user.user_id, 'term.update', `${label.trim()} (${moved.rowCount} bills re-dated)`);
+    res.json({ success: true, message: `Semester updated. ${moved.rowCount} bill(s) now follow the new dates.` });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.post('/api/admin/terms/:id/activate', ...adminOnly, async (req, res) => {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`UPDATE academic_terms SET is_active = false`);
+    const r = await client.query(`UPDATE academic_terms SET is_active = true WHERE term_id = $1 RETURNING label`, [req.params.id]);
+    if (!r.rows.length) { await client.query('ROLLBACK'); return res.status(404).json({ success: false, error: 'Semester not found.' }); }
+    await client.query('COMMIT');
+    await audit(req.user.user_id, 'term.activate', r.rows[0].label);
+    res.json({ success: true, message: `${r.rows[0].label} is now the active semester.` });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    fail(res, err);
+  } finally {
+    client.release();
+  }
+});
+
+// ---- Bulk billing ----
+app.post('/api/admin/bulk-bill', ...adminOnly, async (req, res) => {
+  const { fee_type_id, title, amount, due_period, year_level } = req.body;
+  const amt = parseFloat(amount);
+  const period = PERIODS[due_period] ? due_period : 'finals';
+  const yl = year_level && year_level !== 'all' ? parseInt(year_level) : null;
+  if (!fee_type_id || !title || isNaN(amt) || amt <= 0) {
+    return res.status(400).json({ success: false, error: 'Fee type, title and a valid amount are required.' });
+  }
+  try {
+    const term = await activeTerm();
+    const r = await db.query(
+      `INSERT INTO bills (student_id, fee_type_id, title, amount, status, due_date, issued_by, term_id, due_period)
+       SELECT user_id, $1::int, $2, $3::numeric, 'unpaid', $4::date, $5::int, $6::int, $7
+       FROM users WHERE role = 'student' AND status = 'approved' AND ($8::int IS NULL OR year_level = $8::int)`,
+      [fee_type_id, title.trim(), amt, term ? term[period] : null, req.user.user_id, term ? term.term_id : null, period, yl]
+    );
+    await audit(req.user.user_id, 'bill.bulk', `${title.trim()} ₱${peso(amt)} → ${r.rowCount} students (${yl ? yl + 'Y' : 'all'})`);
+    res.json({ success: true, message: `Billed ${r.rowCount} student(s) ₱${peso(amt)} each.` });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ---- Corrections: void a confirmed payment, cancel a bill ----
+app.post('/api/admin/payments/:id/void', ...adminOnly, async (req, res) => {
+  const reason = (req.body.reason || '').trim();
+  if (!reason) return res.status(400).json({ success: false, error: 'Enter a reason for voiding this payment.' });
+  try {
+    const p = (await db.query(
+      `SELECT p.payment_id, p.status, p.amount_paid, b.bill_id, b.amount FROM payments p JOIN bills b ON b.bill_id = p.bill_id WHERE p.payment_id = $1`,
+      [req.params.id]
+    )).rows[0];
+    if (!p) return res.status(404).json({ success: false, error: 'Payment not found.' });
+    if (p.status !== 'confirmed') return res.status(400).json({ success: false, error: 'Only confirmed payments can be voided.' });
+    await db.query(`UPDATE payments SET status = 'voided', void_reason = $1, voided_by = $2 WHERE payment_id = $3`, [reason, req.user.user_id, p.payment_id]);
+    await refreshBillStatus(p.bill_id, parseFloat(p.amount));
+    await audit(req.user.user_id, 'payment.void', `${orNo(p.payment_id)} ₱${peso(p.amount_paid)} — ${reason}`);
+    res.json({ success: true, message: `${orNo(p.payment_id)} voided.` });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+app.post('/api/admin/bills/:id/cancel', ...adminOnly, async (req, res) => {
+  try {
+    const b = (await db.query(`SELECT bill_id, title, status FROM bills WHERE bill_id = $1`, [req.params.id])).rows[0];
+    if (!b) return res.status(404).json({ success: false, error: 'Bill not found.' });
+    if (await getPaidTotal(b.bill_id) > 0) {
+      return res.status(400).json({ success: false, error: 'This bill already has confirmed payments. Void them first.' });
+    }
+    await db.query(`UPDATE payments SET status = 'rejected' WHERE bill_id = $1 AND status = 'pending'`, [b.bill_id]);
+    await db.query(`UPDATE bills SET status = 'cancelled' WHERE bill_id = $1`, [b.bill_id]);
+    await audit(req.user.user_id, 'bill.cancel', b.title);
+    res.json({ success: true, message: 'Bill cancelled.' });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// ---- Audit log ----
+app.get('/api/admin/audit', ...adminOnly, async (req, res) => {
+  try {
+    const r = await db.query(
+      `SELECT a.log_id, a.action, a.detail, a.created_at, u.full_name AS actor
+       FROM audit_logs a LEFT JOIN users u ON u.user_id = a.actor_id ORDER BY a.log_id DESC LIMIT 200`
+    );
+    res.json({ success: true, logs: r.rows });
+  } catch (err) {
+    fail(res, err);
   }
 });
 

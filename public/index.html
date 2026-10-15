@@ -3,262 +3,104 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="theme-color" content="#0f172a" />
+  <meta name="theme-color" content="#0e2238" />
   <link rel="manifest" href="/manifest.json" />
-  <title>Torres Capitol College - School Billing & Payment System</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <title>Torres Capitol College · Billing & Payments</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
+  <script>document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light';</script>
 </head>
 <body>
 
-  <!-- AUTH CONTAINER -->
-  <div id="authContainer" class="auth-container">
-    <div class="auth-card">
-      <h2>🎓 Torres Capitol College</h2>
-      <p class="subtitle">School Billing & Payment System</p>
+  <!-- SIGN IN / REGISTER -->
+  <div id="auth" class="auth hidden">
+    <section class="auth-brand">
+      <div class="crest">TCC</div>
+      <h1>Torres Capitol College</h1>
+      <p class="auth-lede">See what you owe, pay it, and keep every official receipt in one place.</p>
+      <ul class="auth-points">
+        <li>Statement of account that is always current</li>
+        <li>Pay by GCash, bank transfer or at the Business Office</li>
+        <li>Official receipts you can print or save as PDF</li>
+      </ul>
+      <p class="auth-foot">Business Office · Mon–Fri, 8:00 AM–5:00 PM</p>
+    </section>
 
-      <div class="auth-tabs">
-        <button onclick="switchAuthTab('login')" id="tabLoginBtn" class="active-tab">Login</button>
-        <button onclick="switchAuthTab('register')" id="tabRegisterBtn">Register</button>
+    <section class="auth-form-side">
+      <div class="auth-card">
+        <div class="seg" role="tablist">
+          <button id="tabLogin" class="on" onclick="switchAuthTab('login')" role="tab">Sign in</button>
+          <button id="tabRegister" onclick="switchAuthTab('register')" role="tab">Create account</button>
+        </div>
+
+        <form id="loginForm" onsubmit="submitForm(event, doLogin)">
+          <h2>Welcome back</h2>
+          <p class="muted">Use your Student ID or school email.</p>
+          <label class="field"><span>Student ID or email</span>
+            <input name="identifier" autocomplete="username" placeholder="2024-0001 or you@tcc.edu.ph" required />
+          </label>
+          <label class="field"><span>Password</span>
+            <div class="pw"><input name="password" type="password" autocomplete="current-password" required />
+            <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button></div>
+          </label>
+          <button class="btn primary block" type="submit">Sign in</button>
+        </form>
+
+        <form id="registerForm" class="hidden" onsubmit="submitForm(event, doRegister)">
+          <h2>Create your account</h2>
+          <p class="muted">The Business Office approves new accounts before you can sign in.</p>
+          <div class="grid2">
+            <label class="field"><span>Student ID</span><input name="student_id" placeholder="2024-0001" required /></label>
+            <label class="field"><span>Year level</span>
+              <select name="year_level" required>
+                <option value="1">1st year</option><option value="2">2nd year</option>
+                <option value="3">3rd year</option><option value="4">4th year</option>
+              </select>
+            </label>
+          </div>
+          <label class="field"><span>Full name</span><input name="full_name" placeholder="Juan Dela Cruz" required /></label>
+          <label class="field"><span>Email</span><input name="email" type="email" placeholder="you@tcc.edu.ph" required /></label>
+          <label class="field"><span>Password</span>
+            <div class="pw"><input name="password" type="password" minlength="6" autocomplete="new-password" required />
+            <button type="button" class="pw-toggle" onclick="togglePw(this)">Show</button></div>
+            <small class="muted">At least 6 characters.</small>
+          </label>
+          <button class="btn primary block" type="submit">Submit registration</button>
+        </form>
       </div>
+    </section>
+  </div>
 
-      <form id="loginForm" onsubmit="handleLogin(event)">
-        <div class="form-group">
-          <label>Student ID or Email</label>
-          <input type="text" id="loginIdentifier" placeholder="e.g., 2024-0001 or student@tcc.edu.ph" required />
-        </div>
-        <div class="form-group">
-          <label>Password</label>
-          <input type="password" id="loginPassword" placeholder="••••••••" required />
-        </div>
-        <button type="submit" class="btn-primary full-width">Sign In</button>
-      </form>
+  <!-- APP SHELL -->
+  <div id="app" class="app hidden">
+    <aside class="side" id="side">
+      <div class="side-brand"><span class="crest sm">TCC</span><div><strong>Torres Capitol</strong><small>Billing & Payments</small></div></div>
+      <nav id="nav" class="nav"></nav>
+      <div class="side-foot">
+        <div class="who"><strong id="whoName"></strong><small id="whoRole"></small></div>
+        <button class="btn ghost block" onclick="handleLogout()">Sign out</button>
+      </div>
+    </aside>
+    <div class="scrim" id="scrim" onclick="toggleSide(false)"></div>
 
-      <form id="registerForm" onsubmit="handleRegister(event)" class="hidden">
-        <div class="form-group">
-          <label>Student ID Number</label>
-          <input type="text" id="regStudentId" placeholder="e.g., 2024-0001" required />
-        </div>
-        <div class="form-group">
-          <label>Full Name</label>
-          <input type="text" id="regFullName" placeholder="Juan Dela Cruz" required />
-        </div>
-        <div class="form-group">
-          <label>Email Address</label>
-          <input type="email" id="regEmail" placeholder="student@tcc.edu.ph" required />
-        </div>
-        <div class="form-group">
-          <label>Year Level</label>
-          <select id="regYearLevel" required>
-            <option value="1">1st Year (₱5,000.00 Base Fee)</option>
-            <option value="2">2nd Year (₱5,500.00 Base Fee)</option>
-            <option value="3">3rd Year (₱6,000.00 Base Fee)</option>
-            <option value="4">4th Year (₱6,500.00 Base Fee)</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Password (min. 6 characters)</label>
-          <input type="password" id="regPassword" placeholder="••••••••" minlength="6" required />
-        </div>
-        <button type="submit" class="btn-primary full-width">Submit Registration</button>
-      </form>
+    <div class="main">
+      <header class="top">
+        <button class="icon-btn menu-btn" onclick="toggleSide(true)" aria-label="Open menu">☰</button>
+        <h1 id="pageTitle"></h1>
+        <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode"></button>
+      </header>
+      <main id="view" class="view"></main>
     </div>
   </div>
 
-  <!-- MAIN APP -->
-  <div id="appContainer" class="hidden">
-    <header class="no-print">
-      <div class="header-content">
-        <h1>🎓 TCC Billing System</h1>
-        <div class="header-right">
-          <span id="userInfoDisplay" class="user-badge"></span>
-          <nav class="role-nav" id="roleNav"></nav>
-          <button onclick="handleLogout()" class="btn-danger-outline">Logout</button>
-        </div>
-      </div>
-    </header>
+  <div id="modalRoot"></div>
+  <div id="toasts" aria-live="polite"></div>
+  <div id="printArea"></div>
 
-    <main class="container">
-      <!-- STUDENT PORTAL -->
-      <section id="roleStudent" class="portal-section">
-        <div class="card" id="soaPrintArea">
-          <div class="flex-between" style="margin-bottom: 1rem;">
-            <h2>Statement of Account (SOA)</h2>
-            <button onclick="window.print()" class="btn-secondary no-print">🖨️ Print SOA / Save PDF</button>
-          </div>
-
-          <div class="info-grid">
-            <p><strong>Student ID:</strong> <span id="sId"></span></p>
-            <p><strong>Full Name:</strong> <span id="sName"></span></p>
-            <p><strong>Status:</strong> <span class="text-success">Approved</span></p>
-          </div>
-
-          <div class="table-wrap">
-            <table class="fee-table">
-              <thead><tr><th>Description / Bill Item</th><th>Amount</th><th>Paid</th><th>Status</th><th>Due Date</th></tr></thead>
-              <tbody id="sBillsTableBody"></tbody>
-            </table>
-          </div>
-
-          <table class="fee-table" style="margin-top: 1rem;">
-            <tr class="highlight"><th>Total Outstanding Balance</th><td id="sBalance" class="text-danger">₱0.00</td></tr>
-          </table>
-        </div>
-
-        <div class="card no-print">
-          <h2>Submit Online Payment</h2>
-          <p class="subtitle">Pay through GCash / bank, then submit your reference here. A cashier will verify it.</p>
-          <form id="studentPaymentForm" onsubmit="submitStudentPayment(event)" class="payment-form-grid">
-            <div class="form-group">
-              <label>Select Bill to Pay</label>
-              <select id="spBillSelect" onchange="fillStudentAmount()" required>
-                <option value="">-- Choose Unpaid Bill --</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Payment Amount (₱)</label>
-              <input type="number" id="spAmount" step="0.01" min="0.01" required placeholder="0.00" />
-            </div>
-            <div class="form-group">
-              <label>Payment Channel</label>
-              <select id="spChannel" required>
-                <option value="GCash">GCash Transfer</option>
-                <option value="Bank Transfer">Bank Transfer (Landbank / BPI)</option>
-                <option value="Business Office">Over-the-Counter (Business Office)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Reference Number</label>
-              <input type="text" id="spReference" placeholder="GCash / bank reference no." />
-            </div>
-            <button type="submit" class="btn-primary" style="grid-column: 1 / -1;">Submit Payment Reference</button>
-          </form>
-        </div>
-
-        <div class="card">
-          <h2>Payment History & Receipts</h2>
-          <div class="table-wrap">
-            <table class="fee-table">
-              <thead><tr><th>Date</th><th>Bill</th><th>Method</th><th>Amount</th><th>Status</th><th></th></tr></thead>
-              <tbody id="studentHistoryBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- CASHIER DASHBOARD -->
-      <section id="roleCashier" class="portal-section hidden">
-        <div class="card">
-          <h2>Cashier Transaction Window</h2>
-          <p class="subtitle">Find a student, then record a counter payment.</p>
-
-          <div class="lookup-row">
-            <input type="text" id="cStudentNo" placeholder="Student ID, e.g. 2024-0001" />
-            <button type="button" onclick="lookupStudent()">🔍 Find Student</button>
-          </div>
-          <p id="cStudentName" class="lookup-result"></p>
-
-          <form id="cashierForm" onsubmit="processCashierPayment(event)" class="payment-form-grid">
-            <div class="form-group">
-              <label>Bill</label>
-              <select id="cBillSelect" onchange="fillCashierAmount()" required>
-                <option value="">-- Find a student first --</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>Amount Received (₱)</label>
-              <input type="number" id="cAmount" step="0.01" min="0.01" placeholder="0.00" required />
-            </div>
-            <div class="form-group">
-              <label>Payment Mode</label>
-              <select id="cMethod" required>
-                <option value="cash">Cash (BO Counter)</option>
-                <option value="gcash">GCash</option>
-                <option value="bank">Bank Transfer</option>
-              </select>
-            </div>
-            <button type="submit" class="btn-primary" style="grid-column: 1 / -1;">Process Payment & Email Receipt</button>
-          </form>
-        </div>
-
-        <div class="card">
-          <div class="flex-between">
-            <h2>Pending Student Payments</h2>
-            <button class="btn-secondary" onclick="loadPending()">↻ Refresh</button>
-          </div>
-          <div class="table-wrap">
-            <table class="fee-table">
-              <thead><tr><th>Student</th><th>Bill</th><th>Method</th><th>Reference</th><th>Amount</th><th></th></tr></thead>
-              <tbody id="pendingBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- ADMIN PANEL -->
-      <section id="roleAdmin" class="portal-section hidden">
-        <div class="card">
-          <div class="flex-between">
-            <h2>Pending Registrations</h2>
-            <button class="btn-secondary" onclick="loadAdminUsers()">↻ Refresh</button>
-          </div>
-          <div class="table-wrap">
-            <table class="fee-table">
-              <thead><tr><th>Student ID</th><th>Name</th><th>Email</th><th></th></tr></thead>
-              <tbody id="pendingUsersBody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Issue a New Bill</h2>
-          <p class="subtitle">Add assessment bills, miscellaneous fees, or penalties.</p>
-          <form id="adminAddBillForm" onsubmit="addNewBill(event)" class="payment-form-grid">
-            <div class="form-group">
-              <label>Student ID Number</label>
-              <input type="text" id="abStudentId" placeholder="e.g., 2024-0001" required />
-            </div>
-            <div class="form-group">
-              <label>Fee Title / Description</label>
-              <input type="text" id="abTitle" placeholder="Laboratory Fee / Uniform Fee" required />
-            </div>
-            <div class="form-group">
-              <label>Amount (₱)</label>
-              <input type="number" id="abAmount" step="0.01" min="0.01" placeholder="1500.00" required />
-            </div>
-            <div class="form-group">
-              <label>Due Date</label>
-              <input type="date" id="abDueDate" />
-            </div>
-            <button type="submit" class="btn-primary" style="grid-column: 1 / -1;">Issue Bill</button>
-          </form>
-        </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- Official Receipt Modal -->
-  <div id="receiptModal" class="modal hidden">
-    <div class="receipt-box" id="receiptPrintArea">
-      <div class="receipt-header">
-        <h2>OFFICIAL RECEIPT</h2>
-        <p>Torres Capitol College - Business Office</p>
-        <hr />
-      </div>
-      <div class="receipt-body">
-        <p><strong>OR Number:</strong> <span id="rcptOR"></span></p>
-        <p><strong>Date/Time:</strong> <span id="rcptDate"></span></p>
-        <p><strong>Student:</strong> <span id="rcptName"></span></p>
-        <p><strong>Item:</strong> <span id="rcptBill"></span></p>
-        <p><strong>Amount Paid:</strong> <span id="rcptAmount"></span></p>
-        <p><strong>Payment Channel:</strong> <span id="rcptMethod"></span></p>
-      </div>
-      <div class="receipt-footer no-print">
-        <button onclick="window.print()" class="btn-print">🖨️ Print / Save PDF</button>
-        <button onclick="closeModal()" class="btn-close">Close</button>
-      </div>
-    </div>
-  </div>
-
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" defer></script>
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
