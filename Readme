@@ -1,22 +1,148 @@
-# TCC Billing – Android app (WebView)
+# TCC Billing System
 
-This is a thin app that opens your deployed site (set in `MainActivity.java`, `START_URL`).
-Because it just shows the live site, every website update shows up in the app automatically.
-You only rebuild the app if you change this Android code or the site address.
+A web-based billing and payment portal for **Torres Capitol College**. Students can see an itemized assessment of fees, submit payments and download official receipts. Cashiers verify and record payments. Administrators manage accounts, fees and semesters.
 
-## Build the APK
-1. Install Android Studio (it includes everything else, including the JDK).
-2. File > Open > choose this `android-app` folder. Let Gradle sync finish
-   (accept any "install missing SDK 34" or "upgrade plugin" prompts).
-3. Build > Build Bundle(s) / APK(s) > Build APK(s).
-4. When it finishes, click "locate". The file is `app/build/outputs/apk/debug/app-debug.apk`.
-5. Copy it to the phone and tap it to install (allow "install unknown apps" when asked).
+It works in any browser, can be installed on a phone as an app (PWA), and also runs inside an Android WebView app.
 
-Needs Android 10 or newer.
+> Capstone project, BSIT. Built by Paul Harvey C. Ampoyo.
 
-## What works inside the app
-- Sign in stays remembered, same as the website.
-- Receipt PDFs and CSV exports are saved to **Downloads/TCC Billing** on the phone.
-- The back button goes back, then asks to press again to exit.
-- If there is no internet, a "Try again" screen shows.
-- The Print buttons are turned off inside the app (Android WebView cannot print). Use Download PDF.
+---
+
+## Features
+
+**Students**
+- Create an account (with password confirmation); the Business Office approves it before first sign-in
+- Sign in with Student ID or email; reset a forgotten password by email
+- Itemized **Assessment of Fees** with total charges, payments, discounts and remaining balance
+- Submit GCash, bank or over-the-counter payments with a reference number
+- Payment history, **official receipts (PDF)** and a printable statement of account
+
+**Cashiers**
+- Cashier terminal to find a student and collect a payment
+- Verify or reject payments submitted by students
+- Student accounts, transaction list with filters and **CSV export**
+- Approve or reject new registrations
+
+**Administrators**
+- Overview dashboard with collection statistics
+- Create cashier and admin accounts (only admins can do this), reset passwords, deactivate accounts
+- Billing setup: fee types, academic semesters with exam dates, bulk billing
+- Apply discounts, cancel bills, void payments (every correction is recorded)
+- Audit log of important actions and an email test tool
+
+**General**
+- Light and dark mode, responsive layout, installable as an app
+- Receipts show the cashier's name and employee ID; statements show who assessed the bill
+
+## Fee schedule
+
+Every new student receives the same line items. Only the year-level total changes, and it drops by ₱2,000 each year.
+
+| Year level | Total assessment |
+|---|---|
+| 1st year | ₱20,000.00 |
+| 2nd year | ₱18,000.00 |
+| 3rd year | ₱16,000.00 |
+| 4th year | ₱14,000.00 |
+
+Flat fees (₱2,980.00 for everyone): Registration, Tinagong Kinaadman, Cyber Views, Teacher's Subsidy, School System, PRISAA, GPTCA. The remainder is split 60% Tuition, 15% Misc. Fees, 18% Computer Laboratory and 7% Internet. To change the numbers, edit `YEAR_TOTALS`, `FLAT` and `SHARE` near the top of `server.js`.
+
+## Tech stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | HTML, CSS, vanilla JavaScript (PWA with service worker) |
+| Backend | Node.js 22, Express 5 |
+| Database | PostgreSQL on Supabase |
+| Auth | JSON Web Tokens, bcrypt password hashing |
+| Email | Nodemailer with Gmail |
+| Hosting | Vercel |
+| Mobile | Android WebView app (separate `android-app` project) |
+
+## Project structure
+
+```
+├── server.js              Express API and business rules
+├── vercel.json            Vercel build and routing settings
+├── package.json
+├── .env.example           Template for environment variables
+├── database/              SQL scripts for Supabase
+└── public/                Website files served to the browser
+    ├── index.html
+    ├── app.js
+    ├── style.css
+    ├── sw.js              Service worker (offline shell)
+    ├── manifest.json      App install settings
+    └── logo.png, icon-192.png, icon-512.png
+```
+
+## Environment variables
+
+| Name | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Yes | Supabase **Transaction pooler** connection string (port 6543) |
+| `JWT_SECRET` | Yes | Long random string used to sign login tokens |
+| `EMAIL_USER` | For email | Gmail address that sends receipts and reset links |
+| `EMAIL_PASS` | For email | Gmail **App Password** (16 characters, no spaces) |
+| `APP_URL` | Recommended | Public site address, used in password-reset links |
+| `EMAIL_SERVICE` | No | Defaults to `gmail` |
+
+Without `EMAIL_USER` and `EMAIL_PASS` the system still works. Receipts are simply not emailed and password reset by email is unavailable.
+
+## Run locally
+
+```bash
+npm install
+cp .env.example .env      # then fill in the real values
+npm run dev               # http://localhost:3000
+```
+
+## Set up the database
+
+In Supabase, open **SQL Editor** and run the scripts in `database/` in order:
+
+1. `01-payments-and-fee-types.sql`
+2. `02-itemized-assessment.sql`
+
+Make sure the `fee_types` table has at least one row (for example "Tuition").
+
+**Create the first admin:** register a normal account on the website, then run:
+
+```sql
+UPDATE users SET role = 'admin', status = 'approved' WHERE email = 'you@example.com';
+```
+
+From then on the admin creates cashier accounts under **Users & staff**. `database/cleanup-test-accounts.sql` removes every non-admin account and is meant for clearing test data before a demo.
+
+## Deploy to Vercel
+
+1. Push this project to GitHub.
+2. In Vercel, import the repository (Framework Preset: **Other**).
+3. Add the environment variables above under **Settings → Environment Variables** (Production).
+4. Deploy. After changing a variable, **redeploy**, because variables apply only to new deployments.
+
+## Email setup (Gmail)
+
+1. Turn on **2-Step Verification** in the Google account.
+2. Open <https://myaccount.google.com/apppasswords>, create an app password and copy the 16 characters.
+3. Set `EMAIL_USER` to the Gmail address and `EMAIL_PASS` to the app password (no spaces).
+4. Redeploy, then sign in as admin and use **Users & staff → Send test email**. If it fails, the exact reason is shown.
+
+## Security notes
+
+- Passwords are hashed with bcrypt; sessions use signed tokens that expire after 12 hours
+- Role checks are enforced on the server for every protected route
+- Sign-in and password-reset attempts are rate limited
+- All database queries are parameterized
+- Students can only open their own statements and receipts
+- Secrets live in environment variables and are never committed
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| Build fails on Vercel | Check that `vercel.json` points to `server.js` and that `public/` exists |
+| Database connection errors | Use the **Transaction pooler** string; encode special characters in the password |
+| "self-signed certificate" | Remove `?sslmode=...` from the end of `DATABASE_URL` |
+| Emails do not arrive | Use **Send test email**; check the App Password, spam folder and Vercel logs |
+| Cannot sign in after registering | An admin or cashier must approve the registration first |
