@@ -25,7 +25,7 @@ async function api(path, options = {}) {
     handleLogout();
     throw new Error(data.error || 'Session expired. Please log in again.');
   }
-  if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+  if (!res.ok) throw new Error(data.error || `Request failed (HTTP ${res.status})`);
   return data;
 }
 
