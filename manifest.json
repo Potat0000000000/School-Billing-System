@@ -1,10 +1,10 @@
 {
-  "name": "School Billing & Payment System",
-  "short_name": "School Billing",
+  "name": "Torres Capitol College Billing System",
+  "short_name": "TCC Billing",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f4f6f9",
-  "theme_color": "#1e293b",
+  "background_color": "#f1f5f9",
+  "theme_color": "#0f172a",
   "icons": [
     {
       "src": "https://img.icons8.com/color/192/graduation-cap.png",

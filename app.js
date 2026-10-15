@@ -1,122 +1,170 @@
-const SUPABASE_URL = 'https://nioslrneolhxabagfg.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_xbrggnfb6ib-tEtWPZT7Mw_TuBHtZCu';
-
-let supabaseClient = null;
-try {
-  supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-} catch (e) {
-  console.log('Using local fallback mode');
-}
-
-// Fallback Mock Database (Guarantees your defense works even offline!)
-let mockStudents = [
+// Local Database State (Mock + Supabase Ready)
+let students = [
   { student_id: '2024-0001', full_name: 'Juan Dela Cruz', course: 'BSIT', year_level: '2nd Year', tuition_fee: 12000, misc_fee: 3500, total_paid: 5000 },
   { student_id: '2024-0002', full_name: 'Maria Santos', course: 'BSIT', year_level: '2nd Year', tuition_fee: 12000, misc_fee: 3500, total_paid: 15500 }
 ];
 
-let transactionsList = [];
+let transactions = [
+  { or_number: 'OR-892341', student_id: '2024-0001', method: 'Cash (BO Counter)', amount_paid: 5000, timestamp: '10/15/2026, 10:30 AM' }
+];
+
 let currentStudent = null;
 
-// DOM Elements
-const searchBtn = document.getElementById('searchBtn');
-const searchInput = document.getElementById('searchInput');
-const accountSection = document.getElementById('accountSection');
-const paymentForm = document.getElementById('paymentForm');
+// --- Role Switcher ---
+function switchRole(role) {
+  document.querySelectorAll('.portal-section').forEach(s => s.classList.add('hidden'));
+  document.querySelectorAll('.role-nav button').forEach(b => b.classList.remove('active-role'));
 
-// 1. Search Student (With Automatic Supabase + Fallback)
-searchBtn.addEventListener('click', async () => {
-  const query = searchInput.value.trim();
-  if (!query) return alert('Please enter a Student ID');
-
-  let data = null;
-
-  // Try Supabase first if configured
-  if (supabaseClient) {
-    try {
-      const res = await supabaseClient.from('students').select('*').eq('student_id', query).single();
-      if (res.data) data = res.data;
-    } catch (err) {
-      console.log('Supabase fetch failed, checking local mock data');
-    }
+  if (role === 'student') {
+    document.getElementById('roleStudent').classList.remove('hidden');
+    document.getElementById('navStudent').classList.add('active-role');
+  } else if (role === 'cashier') {
+    document.getElementById('roleCashier').classList.remove('hidden');
+    document.getElementById('navCashier').classList.add('active-role');
+    updateCashierTable();
+  } else if (role === 'admin') {
+    document.getElementById('roleAdmin').classList.remove('hidden');
+    document.getElementById('navAdmin').classList.add('active-role');
+    updateAdminTable();
   }
+}
 
-  // Fallback to local array if Supabase didn't return data
-  if (!data) {
-    data = mockStudents.find(s => s.student_id === query);
-  }
+// --- 1. Student Portal Functions ---
+function searchStudentPortal() {
+  const query = document.getElementById('studentSearchInput').value.trim();
+  const found = students.find(s => s.student_id === query);
 
-  if (!data) {
-    alert('Student not found! Try searching: 2024-0001');
-    accountSection.classList.add('hidden');
+  if (!found) {
+    alert('Student ID not found. Try searching: 2024-0001 or 2024-0002');
+    document.getElementById('studentDashboardContent').classList.add('hidden');
     return;
   }
 
-  currentStudent = data;
-  displayAccountDetails();
-});
-
-// 2. Display SOA Details
-function displayAccountDetails() {
-  const s = currentStudent;
-  const totalAssessment = Number(s.tuition_fee) + Number(s.misc_fee);
-  const balance = totalAssessment - Number(s.total_paid);
-
-  document.getElementById('lblStudentId').innerText = s.student_id;
-  document.getElementById('lblName').innerText = s.full_name;
-  document.getElementById('lblCourse').innerText = `${s.course} - ${s.year_level}`;
-  document.getElementById('lblTuition').innerText = `₱${Number(s.tuition_fee).toLocaleString()}`;
-  document.getElementById('lblMisc').innerText = `₱${Number(s.misc_fee).toLocaleString()}`;
-  document.getElementById('lblTotal').innerText = `₱${totalAssessment.toLocaleString()}`;
-  document.getElementById('lblPaid').innerText = `₱${Number(s.total_paid).toLocaleString()}`;
-  document.getElementById('lblBalance').innerText = `₱${balance.toLocaleString()}`;
-
-  accountSection.classList.remove('hidden');
+  currentStudent = found;
+  renderStudentDashboard();
+  document.getElementById('studentDashboardContent').classList.remove('hidden');
 }
 
-// 3. Process Payment
-paymentForm.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const payAmount = parseFloat(document.getElementById('payAmount').value);
-  const payMethod = document.getElementById('payMethod').value;
+function renderStudentDashboard() {
+  const s = currentStudent;
+  const totalAssessment = s.tuition_fee + s.misc_fee;
+  const balance = totalAssessment - s.total_paid;
 
-  if (payAmount <= 0) return alert('Enter a valid payment amount');
+  document.getElementById('sId').innerText = s.student_id;
+  document.getElementById('sName').innerText = s.full_name;
+  document.getElementById('sCourse').innerText = `${s.course} - ${s.year_level}`;
+  document.getElementById('sTuition').innerText = `₱${s.tuition_fee.toLocaleString()}`;
+  document.getElementById('sMisc').innerText = `₱${s.misc_fee.toLocaleString()}`;
+  document.getElementById('sTotal').innerText = `₱${totalAssessment.toLocaleString()}`;
+  document.getElementById('sPaid').innerText = `₱${s.total_paid.toLocaleString()}`;
+  document.getElementById('sBalance').innerText = `₱${balance.toLocaleString()}`;
 
-  const newTotalPaid = Number(currentStudent.total_paid) + payAmount;
-  const generatedOR = 'OR-' + Math.floor(100000 + Math.random() * 900000);
-
-  // Update local mock state immediately for instant UI feedback
-  currentStudent.total_paid = newTotalPaid;
-
-  // Try saving to Supabase in background
-  if (supabaseClient) {
-    supabaseClient.from('students').update({ total_paid: newTotalPaid }).eq('student_id', currentStudent.student_id).then();
-    supabaseClient.from('transactions').insert([{ or_number: generatedOR, student_id: currentStudent.student_id, amount_paid: payAmount, payment_method: payMethod }]).then();
+  // Render History
+  const studentTx = transactions.filter(t => t.student_id === s.student_id);
+  const table = document.getElementById('studentHistoryTable');
+  if (studentTx.length === 0) {
+    table.innerHTML = `<tr><th>Date</th><th>OR / Ref No.</th><th>Channel</th><th>Amount Paid</th></tr><tr><td colspan="4" style="text-align: center; color: #64748b;">No payment history found.</td></tr>`;
+  } else {
+    let html = `<tr><th>Date</th><th>OR / Ref No.</th><th>Channel</th><th>Amount Paid</th></tr>`;
+    studentTx.forEach(t => {
+      html += `<tr><td>${t.timestamp}</td><td>${t.or_number}</td><td>${t.method}</td><td>₱${t.amount_paid.toLocaleString()}</td></tr>`;
+    });
+    table.innerHTML = html;
   }
+}
 
-  // Add to transaction table log
-  transactionsList.unshift({ or_number: generatedOR, student_id: currentStudent.student_id, amount_paid: payAmount, payment_method: payMethod });
-  updateTransactionTable();
+function submitStudentPayment(e) {
+  e.preventDefault();
+  const amount = parseFloat(document.getElementById('spAmount').value);
+  const channel = document.getElementById('spChannel').value;
+  const refNo = document.getElementById('spRef').value;
 
-  displayAccountDetails();
-  showReceipt(generatedOR, payAmount, payMethod);
-});
+  if (amount <= 0) return alert('Enter a valid amount');
 
-// 4. Update Transaction Table UI
-function updateTransactionTable() {
-  const table = document.getElementById('transactionTable');
-  if (transactionsList.length === 0) return;
+  currentStudent.total_paid += amount;
+  const orNum = 'REF-' + Math.floor(100000 + Math.random() * 900000);
+  const timestamp = new Date().toLocaleString();
 
-  let html = `<tr><th>OR Number</th><th>Student ID</th><th>Amount</th><th>Method</th></tr>`;
-  transactionsList.forEach(t => {
-    html += `<tr><td>${t.or_number}</td><td>${t.student_id}</td><td>₱${t.amount_paid.toLocaleString()}</td><td>${t.payment_method}</td></tr>`;
+  transactions.unshift({ or_number: `${orNum} (${channel}: ${refNo})`, student_id: currentStudent.student_id, method: channel, amount_paid: amount, timestamp });
+
+  renderStudentDashboard();
+  showReceipt(orNum, amount, `${channel} - Ref: ${refNo}`);
+  document.getElementById('studentPaymentForm').reset();
+  alert('Payment reference submitted successfully!');
+}
+
+function printSOA() {
+  window.print();
+}
+
+// --- 2. Cashier Dashboard Functions ---
+function processCashierPayment(e) {
+  e.preventDefault();
+  const studentId = document.getElementById('cStudentId').value.trim();
+  const amount = parseFloat(document.getElementById('cAmount').value);
+  const method = document.getElementById('cMethod').value;
+
+  const targetStudent = students.find(s => s.student_id === studentId);
+  if (!targetStudent) return alert('Student ID not registered in the system!');
+
+  targetStudent.total_paid += amount;
+  const orNum = 'OR-' + Math.floor(100000 + Math.random() * 900000);
+  const timestamp = new Date().toLocaleString();
+
+  transactions.unshift({ or_number: orNum, student_id: studentId, method, amount_paid: amount, timestamp });
+
+  currentStudent = targetStudent;
+  showReceipt(orNum, amount, method);
+  document.getElementById('cashierForm').reset();
+  updateCashierTable();
+}
+
+function updateCashierTable() {
+  const table = document.getElementById('cashierTransactionsTable');
+  if (transactions.length === 0) return;
+
+  let html = `<tr><th>OR / Ref No.</th><th>Student ID</th><th>Method</th><th>Amount</th><th>Timestamp</th></tr>`;
+  transactions.forEach(t => {
+    html += `<tr><td>${t.or_number}</td><td>${t.student_id}</td><td>${t.method}</td><td>₱${t.amount_paid.toLocaleString()}</td><td>${t.timestamp}</td></tr>`;
   });
   table.innerHTML = html;
 }
 
-// 5. Show Receipt Modal
+// --- 3. Admin Panel Functions ---
+function addNewStudent(e) {
+  e.preventDefault();
+  const student_id = document.getElementById('aId').value.trim();
+  const full_name = document.getElementById('aName').value.trim();
+  const course = document.getElementById('aCourse').Value || 'BSIT';
+  const year_level = document.getElementById('aYear').value.trim();
+  const tuition_fee = parseFloat(document.getElementById('aTuition').value);
+  const misc_fee = parseFloat(document.getElementById('aMisc').value);
+
+  if (students.some(s => s.student_id === student_id)) {
+    return alert('Student ID already exists!');
+  }
+
+  students.push({ student_id, full_name, course, year_level, tuition_fee, misc_fee, total_paid: 0 });
+  alert(`Student ${full_name} registered successfully with billing assessment!`);
+  document.getElementById('adminAddStudentForm').reset();
+  updateAdminTable();
+}
+
+function updateAdminTable() {
+  const table = document.getElementById('adminStudentTable');
+  let html = `<tr><th>Student ID</th><th>Name</th><th>Course</th><th>Total Assessment</th><th>Total Paid</th><th>Balance</th></tr>`;
+  students.forEach(s => {
+    const total = s.tuition_fee + s.misc_fee;
+    const balance = total - s.total_paid;
+    html += `<tr><td>${s.student_id}</td><td>${s.full_name}</td><td>${s.course}</td><td>₱${total.toLocaleString()}</td><td>₱${s.total_paid.toLocaleString()}</td><td>₱${balance.toLocaleString()}</td></tr>`;
+  });
+  table.innerHTML = html;
+}
+
+// --- Receipt Modal ---
 function showReceipt(orNum, amount, method) {
-  const totalAssessment = Number(currentStudent.tuition_fee) + Number(currentStudent.misc_fee);
-  const remaining = totalAssessment - Number(currentStudent.total_paid);
+  const totalAssessment = currentStudent.tuition_fee + currentStudent.misc_fee;
+  const remaining = totalAssessment - currentStudent.total_paid;
 
   document.getElementById('rcptOR').innerText = orNum;
   document.getElementById('rcptDate').innerText = new Date().toLocaleString();
