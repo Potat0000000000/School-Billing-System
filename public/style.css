@@ -277,3 +277,17 @@ tfoot td { font-weight: 600; background: color-mix(in srgb, var(--paper) 60%, va
 .recent .mini-list { margin: 0 -1.25rem -1.25rem; border-top: 1px solid var(--line); }
 .recent .mini-list li { align-items: center; padding: .6rem 1.25rem; }
 @media (max-width: 900px) { .term-split { grid-template-columns: 1fr; } }
+
+/* ---------- itemized assessment of fees ---------- */
+.assess-list { list-style: none; margin: 0; padding: 0 1.25rem; }
+.assess-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .8rem 0; border-bottom: 1px solid var(--line); }
+.assess-list li:last-child { border-bottom: 0; }
+.assess-total { margin: 0; padding: 1rem 1.25rem 1.25rem; border-top: 1px solid var(--line); display: grid; gap: .4rem; }
+.assess-total > div { display: flex; justify-content: space-between; gap: 1rem; }
+.assess-total dt { color: var(--muted); }
+.assess-total dd { margin: 0; font-weight: 500; }
+.assess-total .less dd { color: var(--ok); }
+.assess-total .remaining { margin-top: .5rem; padding-top: .8rem; border-top: 2px solid var(--line); align-items: baseline; }
+.assess-total .remaining dt { font-weight: 600; color: var(--ink); }
+.assess-total .remaining dd { font-family: var(--serif); font-size: 1.6rem; font-weight: 600; color: var(--bad); }
+.assess-total .remaining dd.clear { color: var(--ok); }

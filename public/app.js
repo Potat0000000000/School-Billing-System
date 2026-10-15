@@ -36,6 +36,7 @@ const CHIP = {
   paid: ['Paid', 'ok'], confirmed: ['Confirmed', 'ok'], partially_paid: ['Partly paid', 'warn'], pending: ['Awaiting verification', 'warn'],
   unpaid: ['Unpaid', 'bad'], rejected: ['Rejected', 'bad'], voided: ['Voided', 'mute'], cancelled: ['Cancelled', 'mute'], overdue: ['Overdue', 'bad']
 };
+const ordinal = (n) => ['', '1st', '2nd', '3rd', '4th'][n] || n + 'th';
 const chip = (s) => { const [l, c] = CHIP[s] || [s, 'mute']; return `<span class="chip ${c}">${esc(l)}</span>`; };
 
 const ICON = {
@@ -424,14 +425,40 @@ function downloadReceiptPDF() {
 function printSOA(d) {
   d = d || S.sum;
   const st = d.student;
-  const rows = d.bills.map((b) => `<tr><td>${esc(b.title)}</td><td>${b.due_period ? esc(PERIODS[b.due_period]) + ' · ' : ''}${fmtDate(b.due_date)}</td>
-    <td class="right">${peso(b.amount)}</td><td class="right">${peso(b.paid)}</td><td class="right">${peso(num(b.amount) - num(b.paid))}</td></tr>`).join('');
+  const rows = d.bills.map((b) => {
+    const due = `${b.due_period ? esc(PERIODS[b.due_period]) + ' · ' : ''}${fmtDate(b.due_date)}`;
+    const rem = num(b.amount) - num(b.paid);
+    if (!b.items || !b.items.length) {
+      return `<tr><td>${esc(b.title)}</td><td>${due}</td><td class="right">${peso(b.amount)}</td><td class="right">${peso(b.paid)}</td><td class="right">${peso(rem)}</td></tr>`;
+    }
+    const lines = b.items.map((i) => `<tr><td>${esc(i.description)}</td><td></td><td class="right">${peso(i.amount)}</td><td></td><td></td></tr>`).join('');
+    const disc = num(b.discount) > 0 ? `<tr><td>Less: Discounts</td><td></td><td class="right">− ${peso(b.discount)}</td><td></td><td></td></tr>` : '';
+    return `<tr><td colspan="5"><strong>${esc(b.title)}</strong> · due ${due}</td></tr>${lines}${disc}<tr><td>Payments received · balance</td><td></td><td></td><td class="right">${peso(b.paid)}</td><td class="right">${peso(rem)}</td></tr>`;
+  }).join('');
   printHTML(`<div class="receipt soa"><div class="r-head"><div><h2>Statement of Account</h2><small>Torres Capitol College · Business Office</small></div>
     <div class="r-no"><small>As of</small><strong>${fmtDate(todayStr())}</strong></div></div>
     <dl><dt>Student</dt><dd>${esc(st.full_name)}</dd><dt>Student ID</dt><dd>${esc(st.student_or_emp_id)}</dd></dl>
     <table><thead><tr><th>Item</th><th>Due</th><th class="right">Billed</th><th class="right">Paid</th><th class="right">Balance</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="5">No bills.</td></tr>'}</tbody></table>
     <div class="r-total"><span>Total outstanding balance</span><strong>${peso(d.current_balance)}</strong></div></div>`);
+}
+
+// Itemized "Assessment of Fees" card (student dashboard)
+function assessmentPanel(b, d) {
+  const charges = num(b.amount) + num(b.discount);
+  const rem = num(b.amount) - num(b.paid);
+  const yl = d.student.year_level;
+  const sub = [b.term_label || 'Current semester', yl ? ordinal(yl) + ' year' : '', b.due_period ? 'Due ' + PERIODS[b.due_period] + (b.due_date ? ' · ' + fmtDate(b.due_date) : '') : ''].filter(Boolean).join(' · ');
+  return `<section class="panel">
+    <div class="panel-head"><div><h3>Assessment of Fees</h3><p>${esc(sub)}</p></div>
+      ${rem > 0.01 ? `<button class="btn primary" onclick="S.preBill=${b.bill_id};go('pay')">Pay now</button>` : chip('paid')}</div>
+    <ul class="assess-list">${b.items.map((i) => `<li><span>${esc(i.description)}</span><span class="num">${peso(i.amount)}</span></li>`).join('')}</ul>
+    <dl class="assess-total">
+      <div><dt>Total charges</dt><dd class="num">${peso(charges)}</dd></div>
+      <div class="less"><dt>Less: Payments</dt><dd class="num">− ${peso(b.paid)}</dd></div>
+      <div class="less"><dt>Less: Discounts</dt><dd class="num">− ${peso(b.discount)}</dd></div>
+      <div class="remaining"><dt>Remaining balance</dt><dd class="num ${rem > 0.01 ? '' : 'clear'}">${peso(rem)}</dd></div>
+    </dl></section>`;
 }
 
 // =====================================================
@@ -449,6 +476,8 @@ VIEWS.dashboard = async function () {
   const next = d.bills.filter((b) => b.status !== 'paid' && b.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date))[0];
   const pct = billed ? Math.min(100, (paid / billed) * 100) : 0;
   const open = d.bills.some((b) => b.status !== 'paid');
+  const assessed = d.bills.filter((b) => b.items && b.items.length);
+  const others = d.bills.filter((b) => !(b.items && b.items.length));
 
   setView(`
     <section class="statement">
@@ -469,11 +498,13 @@ VIEWS.dashboard = async function () {
       </dl></div>
     </section>
 
-    <section class="panel">
-      <div class="panel-head"><div><h3>Billed fees & fines</h3><p>Fees are due at the exam period shown.</p></div></div>
+    ${assessed.map((b) => assessmentPanel(b, d)).join('')}
+
+    <section class="panel ${others.length || !assessed.length ? '' : 'hidden'}">
+      <div class="panel-head"><div><h3>${assessed.length ? 'Other fees & fines' : 'Billed fees & fines'}</h3><p>Fees are due at the exam period shown.</p></div></div>
       <div class="table-wrap"><table>
         <thead><tr><th>Item</th><th>Due</th><th class="right">Amount</th><th class="right">Paid</th><th>Status</th><th></th></tr></thead>
-        <tbody>${d.bills.length ? d.bills.map((b) => `<tr>
+        <tbody>${others.length ? others.map((b) => `<tr>
           <td>${esc(b.title)}${b.category ? `<small>${esc(b.category)}</small>` : ''}</td><td>${dueCell(b)}</td>
           <td class="num right">${peso(b.amount)}</td><td class="num right">${peso(b.paid)}</td><td>${billStatus(b)}</td>
           <td class="right">${b.status !== 'paid' ? `<button class="btn sm" onclick="S.preBill=${b.bill_id};go('pay')">Pay</button>` : ''}</td></tr>`).join('')
@@ -908,16 +939,17 @@ async function loadAccount(id) {
     box.innerHTML = `
       <section class="panel"><div class="panel-body acct-head">
         <div><h2>${esc(d.student.full_name)}</h2><p class="muted" style="margin:.2rem 0 .8rem">${esc(d.student.student_or_emp_id)} · ${esc(d.student.email)}${d.student.year_level ? ` · Year ${d.student.year_level}` : ''}</p>
-          <div class="row-actions"><button class="btn primary" onclick="openIssueBill()">Issue a bill</button><button class="btn" onclick="printSOA(S.acctData)">Print statement</button></div></div>
+          <div class="row-actions"><button class="btn primary" onclick="openIssueBill()">Issue a bill</button><button class="btn" onclick="printSOA(S.acctData)">Print statement</button><button class="btn" onclick="generateAssessment()">Generate assessment</button></div></div>
         <div class="acct-bal"><span class="muted">Outstanding balance</span><strong class="${d.current_balance > 0.01 ? '' : 'text-ok'}">${peso(d.current_balance)}</strong></div>
       </div></section>
       <section class="panel"><div class="panel-head"><h3>Bills</h3></div><div class="table-wrap"><table>
         <thead><tr><th>Item</th><th>Due</th><th class="right">Amount</th><th class="right">Paid</th><th class="right">Balance</th><th>Status</th><th></th></tr></thead>
         <tbody>${d.bills.length ? d.bills.map((b) => { const rem = num(b.amount) - num(b.paid); return `<tr>
-          <td>${esc(b.title)}${b.category ? `<small>${esc(b.category)}</small>` : ''}</td><td>${dueCell(b)}</td>
+          <td>${esc(b.title)}${b.category ? `<small>${esc(b.category)}</small>` : ''}${num(b.discount) > 0 ? `<small>Discount ${peso(b.discount)} applied</small>` : ''}</td><td>${dueCell(b)}</td>
           <td class="num right">${peso(b.amount)}</td><td class="num right">${peso(b.paid)}</td><td class="num right">${peso(rem)}</td><td>${billStatus(b)}</td>
           <td class="right"><div class="row-actions" style="justify-content:flex-end">
             ${rem > 0.01 ? `<button class="btn sm primary" onclick="openCollect(${b.bill_id})">Collect</button>` : ''}
+            ${admin && b.items && b.items.length ? `<button class="btn sm" onclick="openDiscount(${b.bill_id})">Discount</button>` : ''}
             ${admin && num(b.paid) === 0 ? `<button class="btn sm danger" onclick="cancelBill(${b.bill_id})">Cancel</button>` : ''}</div></td></tr>`; }).join('')
           : `<tr><td colspan="7" class="empty">No bills for this student.</td></tr>`}</tbody></table></div></section>
       <section class="panel"><div class="panel-head"><h3>Payment history</h3></div><div class="table-wrap"><table>${paymentHead}
@@ -981,6 +1013,31 @@ async function cancelBill(id) {
   try { toast((await post(`/api/admin/bills/${id}/cancel`)).message); loadAccount(S.acct); }
   catch (e) { toast(e.message, 'error'); }
 }
+function openDiscount(billId) {
+  const b = S.acctData.bills.find((x) => x.bill_id === billId);
+  const charges = num(b.amount) + num(b.discount);
+  openModal({
+    title: 'Apply discount',
+    body: `<p><strong>${esc(b.title)}</strong><br><span class="muted">Total charges ${peso(charges)} · ${esc(S.acctData.student.full_name)}</span></p>
+      <form onsubmit="submitForm(event, doDiscount)"><input type="hidden" name="bill_id" value="${b.bill_id}" />
+        <label class="field"><span>Total discount (₱)</span><input name="discount" type="number" step="0.01" min="0" max="${charges.toFixed(2)}" value="${num(b.discount).toFixed(2)}" required />
+          <small>This replaces any discount already applied. Use 0 to remove it.</small></label>
+        ${formFoot('Save discount')}</form>`
+  });
+}
+async function doDiscount(fd) {
+  const r = await post(`/api/staff/bills/${fd.get('bill_id')}/discount`, { discount: fd.get('discount') });
+  closeModal();
+  toast(r.message);
+  loadAccount(S.acct);
+}
+async function generateAssessment() {
+  const st = S.acctData.student;
+  if (!(await ask('Generate assessment', `Add this semester's itemized assessment of fees to ${st.full_name}'s account?`, 'Generate'))) return;
+  try { toast((await post(`/api/staff/students/${S.acct}/assessment`)).message); loadAccount(S.acct); }
+  catch (e) { toast(e.message, 'error'); }
+}
+
 function openVoid(id) {
   openModal({
     title: 'Void payment',

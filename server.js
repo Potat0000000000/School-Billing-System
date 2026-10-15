@@ -37,11 +37,28 @@ const peso = (n) => Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2
 const orNo = (id) => 'OR-' + String(id).padStart(5, '0');
 const fail = (res, err, code = 500) => res.status(code).json({ success: false, error: err && err.message ? err.message : String(err) });
 
-const YEAR_LEVEL_FEES = {
-  1: { amount: 20000.0, title: '1st Year Base Tuition & Unit Fees' },
-  2: { amount: 18000.0, title: '2nd Year Base Tuition & Unit Fees' },
-  3: { amount: 16000.0, title: '3rd Year Base Tuition & Unit Fees' },
-  4: { amount: 14000.0, title: '4th Year Base Tuition & Unit Fees' }
+// Itemized assessment of fees given to every student when their account is created.
+// Edit the amounts per year level here. Violations/penalties are NOT added automatically;
+// staff issue those later from the student's account if they really happen.
+const ASSESSMENT_ITEMS = [
+  ['Beginning Balance', 0],
+  ['Registration Fee', 1789.36],
+  ['Tuition Fee', 6289.4],
+  ['Misc. Fees', 1889.16],
+  ['BSIT Computer Laboratory', 3225.5],
+  ['Internet', 1385.68],
+  ['Tinagong Kinaadman Fee', 150],
+  ['Cyber Views Fee', 150],
+  ["Teacher's Subsidy", 250],
+  ['School System', 600],
+  ['PRISAA Fee', 180],
+  ['GPTCA Charge', 150]
+];
+const FEE_SCHEDULE = {
+  1: ASSESSMENT_ITEMS, // change any year's list to give it different amounts
+  2: ASSESSMENT_ITEMS,
+  3: ASSESSMENT_ITEMS,
+  4: ASSESSMENT_ITEMS
 };
 
 // Bills are due at exam periods of the active semester, not on a free-form date.
@@ -85,6 +102,24 @@ async function refreshBillStatus(billId, billAmount) {
   await db.query(`UPDATE bills SET status = $1 WHERE bill_id = $2 AND status <> 'cancelled'`, [status, billId]);
 }
 
+// Creates one "Assessment of Fees" bill plus its line items (bills.amount = total charges - discount)
+async function createAssessment(client, { studentId, yearLevel, feeTypeId, issuerId, term }) {
+  const items = FEE_SCHEDULE[yearLevel] || FEE_SCHEDULE[1];
+  const total = Math.round(items.reduce((sum, i) => sum + i[1], 0) * 100) / 100;
+  const bill = await client.query(
+    `INSERT INTO bills (student_id, fee_type_id, title, amount, discount, status, due_date, issued_by, term_id, due_period)
+     VALUES ($1, $2, 'Assessment of Fees', $3, 0, 'unpaid', $4, $5, $6, 'finals') RETURNING bill_id`,
+    [studentId, feeTypeId, total, term ? term.finals : null, issuerId, term ? term.term_id : null]
+  );
+  const billId = bill.rows[0].bill_id;
+  await client.query(
+    `INSERT INTO bill_items (bill_id, description, amount, sort_order)
+     SELECT $1, t.d, t.a, t.o FROM unnest($2::text[], $3::numeric[], $4::int[]) AS t(d, a, o)`,
+    [billId, items.map((i) => i[0]), items.map((i) => i[1]), items.map((_, idx) => idx)]
+  );
+  return { billId, total };
+}
+
 async function studentSummary(studentId) {
   const s = (await db.query(
     `SELECT user_id, student_or_emp_id, full_name, email, status, year_level FROM users WHERE user_id = $1`,
@@ -93,12 +128,20 @@ async function studentSummary(studentId) {
   if (!s) return null;
 
   const bills = await db.query(
-    `SELECT b.bill_id, b.title, b.amount, b.status, b.due_period, to_char(b.due_date,'YYYY-MM-DD') AS due_date, f.name AS category,
+    `SELECT b.bill_id, b.title, b.amount, b.discount, b.status, b.due_period, to_char(b.due_date,'YYYY-MM-DD') AS due_date, f.name AS category,
+            t.label AS term_label,
             COALESCE((SELECT SUM(p.amount_paid) FROM payments p WHERE p.bill_id = b.bill_id AND p.status = 'confirmed'), 0) AS paid
      FROM bills b LEFT JOIN fee_types f ON b.fee_type_id = f.fee_type_id
+     LEFT JOIN academic_terms t ON t.term_id = b.term_id
      WHERE b.student_id = $1 AND b.status <> 'cancelled' ORDER BY b.bill_id`,
     [studentId]
   );
+  const items = await db.query(
+    `SELECT bi.bill_id, bi.description, bi.amount FROM bill_items bi JOIN bills b ON b.bill_id = bi.bill_id
+     WHERE b.student_id = $1 AND b.status <> 'cancelled' ORDER BY bi.bill_id, bi.sort_order, bi.item_id`,
+    [studentId]
+  );
+  bills.rows.forEach((b) => { b.items = items.rows.filter((i) => i.bill_id === b.bill_id); });
   const payments = await db.query(
     `SELECT p.payment_id, p.bill_id, p.amount_paid, p.payment_method, p.payment_date, p.status, p.reference_no, b.title AS bill_title
      FROM payments p JOIN bills b ON b.bill_id = p.bill_id
@@ -270,7 +313,7 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(500).json({ success: false, error: 'No fee type exists yet. Ask the admin to add one.' });
     }
 
-    const yl = YEAR_LEVEL_FEES[parseInt(year_level)] ? parseInt(year_level) : 1;
+    const yl = FEE_SCHEDULE[parseInt(year_level)] ? parseInt(year_level) : 1;
     const hashedPassword = await bcrypt.hash(password, 10);
     const userResult = await client.query(
       `INSERT INTO users (student_or_emp_id, full_name, email, password, role, status, year_level)
@@ -279,15 +322,11 @@ app.post('/api/auth/register', async (req, res) => {
     );
     const newUserId = userResult.rows[0].user_id;
 
-    const feeInfo = YEAR_LEVEL_FEES[yl];
     const issuers = await client.query(`SELECT user_id FROM users WHERE role IN ('admin', 'cashier') LIMIT 1`);
     const issuerId = issuers.rows.length ? issuers.rows[0].user_id : newUserId;
 
-    await client.query(
-      `INSERT INTO bills (student_id, fee_type_id, title, amount, status, due_date, issued_by, term_id, due_period)
-       VALUES ($1, $2, $3, $4, 'unpaid', $5, $6, $7, 'finals')`,
-      [newUserId, feeTypes.rows[0].fee_type_id, feeInfo.title, feeInfo.amount, term ? term.finals : null, issuerId, term ? term.term_id : null]
-    );
+    // Itemized assessment (no violations or penalties are added at registration)
+    await createAssessment(client, { studentId: newUserId, yearLevel: yl, feeTypeId: feeTypes.rows[0].fee_type_id, issuerId, term });
 
     await client.query('COMMIT');
     res.json({ success: true, message: 'Registration submitted. You can sign in once the business office approves your account.' });
@@ -613,6 +652,66 @@ app.post('/api/staff/bills', ...staff, async (req, res) => {
     );
     await audit(req.user.user_id, 'bill.issue', `${title.trim()} ₱${peso(amt)} → ${u.full_name} (due ${PERIODS[period]})`);
     res.json({ success: true, message: `Billed ₱${peso(amt)} for "${title.trim()}".` });
+  } catch (err) {
+    fail(res, err);
+  }
+});
+
+// Give an existing student the itemized assessment (new semester, or after cancelling an old lump-sum bill)
+app.post('/api/staff/students/:id/assessment', ...staff, async (req, res) => {
+  const client = await db.connect();
+  try {
+    const u = (await client.query(`SELECT user_id, full_name, year_level FROM users WHERE user_id = $1 AND role = 'student'`, [req.params.id])).rows[0];
+    if (!u) return res.status(404).json({ success: false, error: 'Student not found.' });
+
+    const term = await activeTerm();
+    const dup = await client.query(
+      `SELECT 1 FROM bills WHERE student_id = $1 AND status <> 'cancelled' AND title = 'Assessment of Fees' AND term_id IS NOT DISTINCT FROM $2::int`,
+      [u.user_id, term ? term.term_id : null]
+    );
+    if (dup.rows.length) return res.status(400).json({ success: false, error: 'This student already has an assessment for this semester.' });
+
+    const ft = await client.query(`SELECT fee_type_id FROM fee_types ORDER BY (name ILIKE 'tuition%') DESC, fee_type_id LIMIT 1`);
+    if (!ft.rows.length) return res.status(400).json({ success: false, error: 'Add a fee type first.' });
+
+    await client.query('BEGIN');
+    const yl = FEE_SCHEDULE[u.year_level] ? u.year_level : 1;
+    const a = await createAssessment(client, { studentId: u.user_id, yearLevel: yl, feeTypeId: ft.rows[0].fee_type_id, issuerId: req.user.user_id, term });
+    await client.query('COMMIT');
+    await audit(req.user.user_id, 'assessment.generate', `₱${peso(a.total)} → ${u.full_name}`);
+    res.json({ success: true, message: `Assessment of ₱${peso(a.total)} added to ${u.full_name}.` });
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (e) {}
+    fail(res, err);
+  } finally {
+    client.release();
+  }
+});
+
+// Admin sets the total discount on an itemized assessment (replaces any earlier discount)
+app.post('/api/staff/bills/:id/discount', ...adminOnly, async (req, res) => {
+  const disc = parseFloat(req.body.discount);
+  if (isNaN(disc) || disc < 0) return res.status(400).json({ success: false, error: 'Enter a valid discount amount.' });
+  try {
+    const b = (await db.query(
+      `SELECT b.bill_id, b.status, u.full_name,
+              COALESCE((SELECT SUM(i.amount) FROM bill_items i WHERE i.bill_id = b.bill_id), 0) AS charges
+       FROM bills b JOIN users u ON u.user_id = b.student_id WHERE b.bill_id = $1`,
+      [req.params.id]
+    )).rows[0];
+    if (!b || b.status === 'cancelled') return res.status(404).json({ success: false, error: 'Bill not found.' });
+    const charges = parseFloat(b.charges);
+    if (charges <= 0) return res.status(400).json({ success: false, error: 'Discounts can only be applied to an itemized assessment.' });
+    if (disc > charges + 0.001) return res.status(400).json({ success: false, error: `The discount cannot be more than the total charges of ₱${peso(charges)}.` });
+
+    const net = Math.round((charges - disc) * 100) / 100;
+    const paid = await getPaidTotal(b.bill_id);
+    if (net < paid - 0.01) return res.status(400).json({ success: false, error: `That discount is too large. The student has already paid ₱${peso(paid)}.` });
+
+    await db.query(`UPDATE bills SET discount = $1, amount = $2 WHERE bill_id = $3`, [disc, net, b.bill_id]);
+    await refreshBillStatus(b.bill_id, net);
+    await audit(req.user.user_id, 'bill.discount', `₱${peso(disc)} → ${b.full_name}`);
+    res.json({ success: true, message: `Discount of ₱${peso(disc)} saved.` });
   } catch (err) {
     fail(res, err);
   }
