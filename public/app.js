@@ -267,9 +267,10 @@ async function doLogin(fd, form) {
 }
 
 async function doRegister(fd, form) {
+  if (fd.get('password') !== fd.get('confirm_password')) throw new Error('Passwords do not match. Please re-enter them.');
   const data = await post('/api/auth/register', {
     student_id: fd.get('student_id').trim(), full_name: fd.get('full_name').trim(), email: fd.get('email').trim(),
-    year_level: fd.get('year_level'), password: fd.get('password')
+    year_level: fd.get('year_level'), password: fd.get('password'), confirm_password: fd.get('confirm_password')
   });
   toast(data.message);
   form.reset();
@@ -425,6 +426,8 @@ function downloadReceiptPDF() {
 function printSOA(d) {
   d = d || S.sum;
   const st = d.student;
+  const ab = d.bills.find((b) => b.assessed_by);
+  const assessor = ab ? ab.assessed_by + (ab.assessed_by_id ? ' (' + ab.assessed_by_id + ')' : '') : 'Business Office';
   const rows = d.bills.map((b) => {
     const due = `${b.due_period ? esc(PERIODS[b.due_period]) + ' · ' : ''}${fmtDate(b.due_date)}`;
     const rem = num(b.amount) - num(b.paid);
@@ -437,7 +440,7 @@ function printSOA(d) {
   }).join('');
   printHTML(`<div class="receipt soa"><div class="r-head"><div><h2>Statement of Account</h2><small>Torres Capitol College · Business Office</small></div>
     <div class="r-no"><small>As of</small><strong>${fmtDate(todayStr())}</strong></div></div>
-    <dl><dt>Student</dt><dd>${esc(st.full_name)}</dd><dt>Student ID</dt><dd>${esc(st.student_or_emp_id)}</dd></dl>
+    <dl><dt>Student</dt><dd>${esc(st.full_name)}</dd><dt>Student ID</dt><dd>${esc(st.student_or_emp_id)}</dd><dt>Assessed by</dt><dd>${esc(assessor)}</dd></dl>
     <table><thead><tr><th>Item</th><th>Due</th><th class="right">Billed</th><th class="right">Paid</th><th class="right">Balance</th></tr></thead>
     <tbody>${rows || '<tr><td colspan="5">No bills.</td></tr>'}</tbody></table>
     <div class="r-total"><span>Total outstanding balance</span><strong>${peso(d.current_balance)}</strong></div></div>`);
@@ -448,7 +451,7 @@ function assessmentPanel(b, d) {
   const charges = num(b.amount) + num(b.discount);
   const rem = num(b.amount) - num(b.paid);
   const yl = d.student.year_level;
-  const sub = [b.term_label || 'Current semester', yl ? ordinal(yl) + ' year' : '', b.due_period ? 'Due ' + PERIODS[b.due_period] + (b.due_date ? ' · ' + fmtDate(b.due_date) : '') : ''].filter(Boolean).join(' · ');
+  const sub = [b.term_label || 'Current semester', yl ? ordinal(yl) + ' year' : '', b.due_period ? 'Due ' + PERIODS[b.due_period] + (b.due_date ? ' · ' + fmtDate(b.due_date) : '') : '', b.assessed_by ? 'Assessed by ' + b.assessed_by : ''].filter(Boolean).join(' · ');
   return `<section class="panel">
     <div class="panel-head"><div><h3>Assessment of Fees</h3><p>${esc(sub)}</p></div>
       ${rem > 0.01 ? `<button class="btn primary" onclick="S.preBill=${b.bill_id};go('pay')">Pay now</button>` : chip('paid')}</div>
@@ -1145,7 +1148,7 @@ function openStaffForm() {
     title: 'Add staff account',
     body: `<form onsubmit="submitForm(event, doStaff)">
       <label class="field"><span>Full name</span><input name="full_name" required /></label>
-      <div class="grid2"><label class="field"><span>Employee ID</span><input name="emp_id" required /></label>
+      <div class="grid2"><label class="field"><span>Employee ID</span><input name="emp_id" required /><small>Used to sign in.</small></label>
         <label class="field"><span>Role</span><select name="role"><option value="cashier">Cashier</option><option value="admin">Admin</option></select></label></div>
       <label class="field"><span>Email</span><input name="email" type="email" required /></label>
       <label class="field"><span>Temporary password</span><input name="password" type="text" minlength="6" required /><small>Ask them to change it after signing in.</small></label>

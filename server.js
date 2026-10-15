@@ -37,29 +37,40 @@ const peso = (n) => Number(n).toLocaleString('en-PH', { minimumFractionDigits: 2
 const orNo = (id) => 'OR-' + String(id).padStart(5, '0');
 const fail = (res, err, code = 500) => res.status(code).json({ success: false, error: err && err.message ? err.message : String(err) });
 
-// Itemized assessment of fees given to every student when their account is created.
-// Edit the amounts per year level here. Violations/penalties are NOT added automatically;
-// staff issue those later from the student's account if they really happen.
-const ASSESSMENT_ITEMS = [
-  ['Beginning Balance', 0],
-  ['Registration Fee', 1789.36],
-  ['Tuition Fee', 6289.4],
-  ['Misc. Fees', 1889.16],
-  ['BSIT Computer Laboratory', 3225.5],
-  ['Internet', 1385.68],
-  ['Tinagong Kinaadman Fee', 150],
-  ['Cyber Views Fee', 150],
-  ["Teacher's Subsidy", 250],
-  ['School System', 600],
-  ['PRISAA Fee', 180],
-  ['GPTCA Charge', 150]
-];
-const FEE_SCHEDULE = {
-  1: ASSESSMENT_ITEMS, // change any year's list to give it different amounts
-  2: ASSESSMENT_ITEMS,
-  3: ASSESSMENT_ITEMS,
-  4: ASSESSMENT_ITEMS
-};
+// ---- Fee schedule (our own numbers) ----
+// Total per year level: 1st year pays the most, then it goes down by 2,000 each year.
+const YEAR_TOTALS = { 1: 20000, 2: 18000, 3: 16000, 4: 14000 };
+
+// Flat fees every student pays, whatever the year level (adds up to 2,980.00)
+const FLAT = { registration: 1500, tinagong: 150, cyber: 150, subsidy: 250, system: 600, prisaa: 180, gptca: 150 };
+
+// The rest of the total (total - flat fees) is split by share. Tuition takes whatever is left,
+// so the items ALWAYS add up to exactly the year's total. Violations/penalties are NOT added here.
+const SHARE = { misc: 0.15, lab: 0.18, internet: 0.07 }; // tuition = the remaining 60%
+const r2 = (n) => Math.round(n * 100) / 100;
+
+function buildSchedule(total) {
+  const rest = total - Object.values(FLAT).reduce((a, b) => a + b, 0);
+  const misc = r2(rest * SHARE.misc);
+  const lab = r2(rest * SHARE.lab);
+  const internet = r2(rest * SHARE.internet);
+  const tuition = r2(rest - misc - lab - internet);
+  return [
+    ['Beginning Balance', 0],
+    ['Registration Fee', FLAT.registration],
+    ['Tuition Fee', tuition],
+    ['Misc. Fees', misc],
+    ['BSIT Computer Laboratory', lab],
+    ['Internet', internet],
+    ['Tinagong Kinaadman Fee', FLAT.tinagong],
+    ['Cyber Views Fee', FLAT.cyber],
+    ["Teacher's Subsidy", FLAT.subsidy],
+    ['School System', FLAT.system],
+    ['PRISAA Fee', FLAT.prisaa],
+    ['GPTCA Charge', FLAT.gptca]
+  ];
+}
+const FEE_SCHEDULE = Object.fromEntries(Object.entries(YEAR_TOTALS).map(([yr, total]) => [yr, buildSchedule(total)]));
 
 // Bills are due at exam periods of the active semester, not on a free-form date.
 const PERIODS = { prelim: 'Prelims', midterm: 'Midterms', prefinal: 'Pre-Finals', finals: 'Finals' };
@@ -130,9 +141,12 @@ async function studentSummary(studentId) {
   const bills = await db.query(
     `SELECT b.bill_id, b.title, b.amount, b.discount, b.status, b.due_period, to_char(b.due_date,'YYYY-MM-DD') AS due_date, f.name AS category,
             t.label AS term_label,
+            CASE WHEN iu.role IN ('cashier', 'admin') THEN iu.full_name END AS assessed_by,
+            CASE WHEN iu.role IN ('cashier', 'admin') THEN iu.student_or_emp_id END AS assessed_by_id,
             COALESCE((SELECT SUM(p.amount_paid) FROM payments p WHERE p.bill_id = b.bill_id AND p.status = 'confirmed'), 0) AS paid
      FROM bills b LEFT JOIN fee_types f ON b.fee_type_id = f.fee_type_id
      LEFT JOIN academic_terms t ON t.term_id = b.term_id
+     LEFT JOIN users iu ON iu.user_id = b.issued_by
      WHERE b.student_id = $1 AND b.status <> 'cancelled' ORDER BY b.bill_id`,
     [studentId]
   );
@@ -167,7 +181,7 @@ async function buildReceipt(paymentId) {
   const r = await db.query(
     `SELECT p.payment_id, p.student_id, p.amount_paid, p.payment_method, p.payment_date, p.reference_no, p.status,
             s.email, s.full_name, s.student_or_emp_id, b.bill_id, b.title, b.amount AS bill_amount,
-            f.name AS category, c.full_name AS cashier_name
+            f.name AS category, c.full_name AS cashier_name, c.student_or_emp_id AS cashier_no
      FROM payments p
      JOIN users s ON s.user_id = p.student_id
      JOIN bills b ON b.bill_id = p.bill_id
@@ -195,7 +209,7 @@ async function buildReceipt(paymentId) {
     category: p.category,
     bill_amount: parseFloat(p.bill_amount),
     bill_balance: Math.max(0, parseFloat(p.bill_amount) - paid),
-    received_by: p.cashier_name || 'Business Office'
+    received_by: p.cashier_name ? p.cashier_name + (p.cashier_no ? ` (${p.cashier_no})` : '') : 'Business Office'
   };
 }
 
@@ -289,6 +303,9 @@ app.post('/api/auth/register', async (req, res) => {
   }
   if (password.length < 6) {
     return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+  }
+  if (password !== req.body.confirm_password) {
+    return res.status(400).json({ success: false, error: 'Passwords do not match. Please re-enter them.' });
   }
 
   const term = await activeTerm();
@@ -924,6 +941,13 @@ app.post('/api/staff/registrations/:id', ...staff, async (req, res) => {
       [status, req.params.id]
     );
     if (!r.rows.length) return res.status(400).json({ success: false, error: 'Registration not found or already handled.' });
+    if (status === 'approved') {
+      // The staff member who approves the account is the one who assessed the student's fees
+      await db.query(
+        `UPDATE bills SET issued_by = $1 WHERE student_id = $2 AND title = 'Assessment of Fees' AND status <> 'cancelled'`,
+        [req.user.user_id, req.params.id]
+      );
+    }
     await audit(req.user.user_id, `registration.${status}`, r.rows[0].full_name);
     res.json({ success: true, message: `Registration ${status}.` });
   } catch (err) {
