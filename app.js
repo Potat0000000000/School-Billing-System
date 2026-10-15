@@ -1,6 +1,6 @@
 // Replace with your Supabase Credentials
-const SUPABASE_URL = 'YOUR_SUPABASE_PROJECT_URL';
-const SUPABASE_KEY = 'YOUR_SUPABASE_ANON_KEY';
+const SUPABASE_URL = 'https://nioslrneolhxabagfg.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_xbrggnfb6ib-tEtWPZT7Mw_TuBHtZCu';
 const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let currentStudent = null;
