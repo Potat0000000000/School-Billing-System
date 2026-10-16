@@ -287,7 +287,7 @@ function showAuth() { $('auth').classList.remove('hidden'); $('app').classList.a
 
 const NAV = {
   student: [['dashboard', 'Dashboard', 'home'], ['pay', 'Pay a bill', 'pay'], ['history', 'Payments & receipts', 'receipt'], ['account', 'My account', 'user']],
-  cashier: [['terminal', 'Cashier terminal', 'pay'], ['dashboard', 'Dashboard', 'home'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['registrations', 'Registrations', 'inbox'], ['account', 'My account', 'user']],
+  cashier: [['terminal', 'Cashier terminal', 'pay'], ['dashboard', 'Dashboard', 'home'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['account', 'My account', 'user']],
   admin: [['overview', 'Overview', 'chart'], ['terminal', 'Cashier terminal', 'pay'], ['students', 'Student accounts', 'search'], ['transactions', 'Transactions', 'list'], ['registrations', 'Registrations', 'inbox'], ['users', 'Users & staff', 'user'], ['setup', 'Billing setup', 'cog'], ['audit', 'Audit log', 'log'], ['account', 'My account', 'user']]
 };
 const TITLES = { terminal: 'Cashier terminal', dashboard: 'Dashboard', overview: 'Overview', pay: 'Pay a bill', history: 'Payments & receipts', account: 'My account', students: 'Student accounts', transactions: 'Transactions', registrations: 'Registrations', users: 'Users & staff', setup: 'Billing setup', audit: 'Audit log' };
@@ -644,7 +644,7 @@ async function staffDashboard(admin) {
       <div class="kpi ok"><span>Collected today</span><strong>${peso(s.collected_today)}</strong><small class="muted">${s.transactions_today} transaction${s.transactions_today === 1 ? '' : 's'}</small></div>
       <div class="kpi bad"><span>Outstanding balance</span><strong>${peso(s.outstanding)}</strong><small class="muted">${s.overdue_bills} overdue bill${s.overdue_bills === 1 ? '' : 's'}</small></div>
       <div class="kpi"><span>Awaiting verification</span><strong>${s.pending_payments}</strong><small class="muted">student payments</small></div>
-      <div class="kpi"><span>New registrations</span><strong>${s.pending_registrations}</strong><small class="muted">to approve</small></div>
+      ${admin ? `<div class="kpi"><span>New registrations</span><strong>${s.pending_registrations}</strong><small class="muted">to approve</small></div>` : ''}
     </div>
     ${extra}
     <section class="panel"><div class="panel-head"><div><h3>Payments awaiting verification</h3><p>Check the reference number against the GCash or bank record, then confirm.</p></div>
@@ -690,7 +690,8 @@ const termPicker = (w) => `<label class="field"><span>Student</span>
   <div id="tl${w}" class="ta-list hidden"></div></div></label>`;
 
 VIEWS.terminal = async function () {
-  const [s, m, regs] = await Promise.all([api('/api/staff/stats'), api('/api/meta'), api('/api/staff/registrations')]);
+  const isAdmin = me.role === 'admin';
+  const [s, m, regs] = await Promise.all([api('/api/staff/stats'), api('/api/meta'), isAdmin ? api('/api/staff/registrations') : Promise.resolve({ users: [] })]);
   S.meta = m;
   S.badges = { pay: s.pending_payments, reg: s.pending_registrations };
   renderNav();
@@ -702,7 +703,7 @@ VIEWS.terminal = async function () {
       <div class="kpi ok"><span>Collected today</span><strong id="tkToday">${peso(s.collected_today)}</strong><small class="muted" id="tkCount">${s.transactions_today} transaction${s.transactions_today === 1 ? '' : 's'}</small></div>
       <div class="kpi bad"><span>Total outstanding balance</span><strong id="tkOut">${peso(s.outstanding)}</strong><small class="muted" id="tkOver">${s.overdue_bills} overdue bill${s.overdue_bills === 1 ? '' : 's'}</small></div>
       <div class="kpi click" onclick="go('${review}')" title="Review student-submitted payments"><span>Awaiting verification</span><strong id="tkPend">${s.pending_payments}</strong><small class="muted">student payments · review</small></div>
-      <div class="kpi click" onclick="$('termRegs').scrollIntoView({ behavior: 'smooth' })"><span>New registrations</span><strong id="tkReg">${s.pending_registrations}</strong><small class="muted">to approve</small></div>
+      ${isAdmin ? `<div class="kpi click" onclick="$('termRegs').scrollIntoView({ behavior: 'smooth' })"><span>New registrations</span><strong id="tkReg">${s.pending_registrations}</strong><small class="muted">to approve</small></div>` : ''}
     </div>
 
     <div class="term-split">
@@ -728,7 +729,7 @@ VIEWS.terminal = async function () {
       </section>
 
       <section class="panel">
-        <div class="panel-head"><div><h3>Process payment</h3><p>Take money at the counter.</p></div>
+        <div class="panel-head"><div><h3>Process payment</h3><p>Cash received over the counter.</p></div>
           <button class="btn sm" onclick="exportCSV()">Export payments (CSV)</button></div>
         <div class="panel-body recent">
           ${termPicker('Pay')}
@@ -737,13 +738,13 @@ VIEWS.terminal = async function () {
       </section>
     </div>
 
-    <section class="panel" id="termRegs">
+    ${isAdmin ? `<section class="panel" id="termRegs">
       <div class="panel-head"><div><h3>Pending account registrations</h3><p>Verify the student is enrolled before approving.</p></div></div>
       <div class="table-wrap"><table><thead><tr><th>Student ID</th><th>Name</th><th>Email</th><th>Year</th><th>Registered</th><th></th></tr></thead>
       <tbody>${regs.users.length ? regs.users.map((u) => `<tr><td>${esc(u.student_or_emp_id)}</td><td>${esc(u.full_name)}</td><td>${esc(u.email)}</td><td>${u.year_level || '—'}</td><td>${fmtDT(u.created_at)}</td>
         <td class="right"><div class="row-actions" style="justify-content:flex-end"><button class="btn sm primary" onclick="setReg(${u.user_id},'approved')">Approve</button><button class="btn sm danger" onclick="setReg(${u.user_id},'rejected')">Reject</button></div></td></tr>`).join('')
         : `<tr><td colspan="6" class="empty">No pending student registrations.</td></tr>`}</tbody></table></div>
-    </section>`);
+    </section>` : ''}`);
   if (S.acct) loadTermStudent(S.acct);
 };
 
@@ -812,11 +813,10 @@ function termPayHTML(d) {
       </select></label>
       <div class="grid2">
         <label class="field"><span>Amount paying (₱)</span><input name="amount_paid" id="tpAmount" type="number" step="0.01" min="0.01" max="${rem0.toFixed(2)}" value="${rem0.toFixed(2)}" oninput="termChange()" required /></label>
-        <label class="field"><span>Payment method</span><select name="payment_method" id="tpMethod" onchange="termMethodChange()"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank">Bank transfer</option></select></label>
+        <label class="field"><span>Payment method</span><input value="Cash (over the counter)" disabled /><input type="hidden" name="payment_method" id="tpMethod" value="cash" /></label>
       </div>
       <label class="field" id="tpCashRow"><span>Cash received (₱) <small>(optional, to work out change)</small></span><input id="tpCash" type="number" step="0.01" min="0" oninput="termChange()" /></label>
       <p class="change-line" id="tpChange"></p>
-      <label class="field hidden" id="tpRefRow"><span>Reference number <small>(optional)</small></span><input name="reference_no" placeholder="From the GCash or bank receipt" /></label>
       <button class="btn primary block" type="submit">Confirm payment &amp; print receipt</button>
     </form>` : `<p class="text-ok" style="font-weight:600">No unpaid bills for this student.</p>`}
     <h4>Recent payments</h4>
@@ -836,17 +836,11 @@ function termBillPick(sel) {
   $('tpAmount').max = o.dataset.rem;
   termChange();
 }
-function termMethodChange() {
-  const cash = $('tpMethod').value === 'cash';
-  $('tpCashRow').classList.toggle('hidden', !cash);
-  $('tpRefRow').classList.toggle('hidden', cash);
-  termChange();
-}
 function termChange() {
   const out = $('tpChange');
   if (!out) return;
   const due = num($('tpAmount').value);
-  const got = $('tpMethod').value === 'cash' ? num($('tpCash').value) : 0;
+  const got = num($('tpCash').value);
   out.className = 'change-line' + (got ? (got >= due ? ' ok' : ' short') : '');
   out.textContent = got ? (got >= due ? `Change to give: ${peso(got - due)}` : `Short by ${peso(due - got)}`) : '';
 }
@@ -863,7 +857,7 @@ async function doTermPay(fd) {
   const rem = num(sel.options[sel.selectedIndex].dataset.rem);
   const amt = num(fd.get('amount_paid'));
   if (amt > rem + 0.01) throw new Error(`The amount is more than the remaining balance of ${peso(rem)}.`);
-  if (fd.get('payment_method') === 'cash' && num($('tpCash').value) && num($('tpCash').value) < amt) throw new Error('The cash received is less than the amount being paid.');
+  if (num($('tpCash').value) && num($('tpCash').value) < amt) throw new Error('The cash received is less than the amount being paid.');
   const r = await post('/api/payments', { bill_id: fd.get('bill_id'), amount_paid: fd.get('amount_paid'), payment_method: fd.get('payment_method'), reference_no: fd.get('reference_no') });
   toast(r.message);
   showReceiptObj(r.receipt);
@@ -968,8 +962,7 @@ function openCollect(billId) {
     body: `<p><strong>${esc(b.title)}</strong><br><span class="muted">Balance ${peso(rem)} · ${esc(S.acctData.student.full_name)}</span></p>
       <form onsubmit="submitForm(event, doCollect)"><input type="hidden" name="bill_id" value="${b.bill_id}" /><input type="hidden" name="rem" value="${rem.toFixed(2)}" />
         <label class="field"><span>Amount received (₱)</span><input name="amount_paid" type="number" step="0.01" min="0.01" max="${rem.toFixed(2)}" value="${rem.toFixed(2)}" required /></label>
-        <label class="field"><span>Payment mode</span><select name="payment_method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="bank">Bank transfer</option></select></label>
-        <label class="field"><span>Reference number <small>(optional)</small></span><input name="reference_no" /></label>
+        <label class="field"><span>Payment method</span><input value="Cash (over the counter)" disabled /><input type="hidden" name="payment_method" value="cash" /></label>
         ${formFoot('Record payment')}</form>`
   });
 }

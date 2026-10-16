@@ -798,9 +798,9 @@ app.post('/api/staff/bills/:id/discount', ...adminOnly, async (req, res) => {
   }
 });
 
-// Counter payment, confirmed immediately
+// Counter payment (cash received by the cashier), confirmed immediately
 app.post('/api/payments', ...staff, async (req, res) => {
-  const { bill_id, amount_paid, payment_method, reference_no } = req.body;
+  const { bill_id, amount_paid } = req.body;
   const amt = parseFloat(amount_paid);
   if (!bill_id || isNaN(amt) || amt <= 0) {
     return res.status(400).json({ success: false, error: 'Valid bill and payment amount are required.' });
@@ -818,7 +818,7 @@ app.post('/api/payments', ...staff, async (req, res) => {
     const ins = await db.query(
       `INSERT INTO payments (bill_id, student_id, cashier_id, amount_paid, payment_method, status, reference_no)
        VALUES ($1, $2, $3, $4, $5, 'confirmed', $6) RETURNING payment_id`,
-      [b.bill_id, b.student_id, req.user.user_id, amt, payment_method || 'cash', (reference_no || '').trim() || null]
+      [b.bill_id, b.student_id, req.user.user_id, amt, 'cash', null]
     );
     await refreshBillStatus(b.bill_id, parseFloat(b.amount));
     const receipt = await finalizePayment(ins.rows[0].payment_id);
@@ -983,8 +983,8 @@ app.get('/api/staff/stats', ...staff, async (req, res) => {
   }
 });
 
-// ---- Registrations (cashier or admin can approve) ----
-app.get('/api/staff/registrations', ...staff, async (req, res) => {
+// ---- Registrations (admin only) ----
+app.get('/api/staff/registrations', ...adminOnly, async (req, res) => {
   try {
     const r = await db.query(
       `SELECT user_id, student_or_emp_id, full_name, email, year_level, created_at
@@ -996,7 +996,7 @@ app.get('/api/staff/registrations', ...staff, async (req, res) => {
   }
 });
 
-app.post('/api/staff/registrations/:id', ...staff, async (req, res) => {
+app.post('/api/staff/registrations/:id', ...adminOnly, async (req, res) => {
   const { status } = req.body;
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ success: false, error: 'Invalid status.' });
   try {
