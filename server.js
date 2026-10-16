@@ -626,7 +626,11 @@ app.post('/api/student/payments', authenticateToken, requireRole('student'), asy
   if (!bill_id || isNaN(amt) || amt <= 0) {
     return res.status(400).json({ success: false, error: 'Choose a bill and enter a valid amount.' });
   }
-  if (payment_method !== 'Business Office' && !(reference_no || '').trim()) {
+  // Online payments only. In-person payments are recorded by the cashier at the counter.
+  if (!['GCash', 'Bank Transfer'].includes(payment_method)) {
+    return res.status(400).json({ success: false, error: 'Choose GCash or Bank Transfer. To pay in person, go to the cashier.' });
+  }
+  if (!(reference_no || '').trim()) {
     return res.status(400).json({ success: false, error: 'Enter the reference number from your GCash or bank receipt.' });
   }
 

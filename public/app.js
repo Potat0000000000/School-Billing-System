@@ -6,7 +6,7 @@
 const PAY_INFO = {
   gcash: '09XX XXX XXXX · Torres Capitol College',
   bank: 'Landbank / BPI · Account name and number here',
-  counter: 'Business Office, Main Building · Mon–Fri, 8:00 AM–5:00 PM'
+  counter: 'Go to the cashier at the Business Office, Main Building · Mon–Fri, 8:00 AM–5:00 PM. She records it for you.'
 };
 
 let token = localStorage.getItem('token') || '';
@@ -540,16 +540,16 @@ VIEWS.pay = async function () {
           <div class="grid2">
             <label class="field"><span>Amount (₱)</span><input name="amount_paid" id="payAmount" type="number" step="0.01" min="0.01" value="${pre ? (num(pre.amount) - num(pre.paid)).toFixed(2) : ''}" required />
               <small>You can pay part of a bill.</small></label>
-            <label class="field"><span>Paid through</span><select name="payment_method"><option>GCash</option><option>Bank Transfer</option><option>Business Office</option></select></label>
+            <label class="field"><span>Paid through</span><select name="payment_method"><option>GCash</option><option>Bank Transfer</option></select></label>
           </div>
-          <label class="field"><span>Reference number</span><input name="reference_no" placeholder="From your GCash or bank receipt" />
-            <small>Not needed if you paid at the Business Office.</small></label>
+          <label class="field"><span>Reference number</span><input name="reference_no" placeholder="From your GCash or bank receipt" required />
+            <small>Paying in person? Just go to the cashier. She will record the payment for you.</small></label>
           <button class="btn primary" type="submit">Submit payment</button>
         </form>` : `<p class="empty" style="padding:1rem 0">You have no unpaid bills.</p>`}
       </div></section>
     <div>
       <section class="panel"><div class="panel-head"><h3>How it works</h3></div><div class="panel-body">
-        <ol class="steps"><li>Pay using one of the channels below.</li><li>Enter the amount and reference number here.</li><li>A cashier verifies your payment.</li><li>Your official receipt is emailed and appears under Payments & receipts.</li></ol></div></section>
+        <ol class="steps"><li>Pay by GCash or bank transfer using the details below.</li><li>Enter the amount and reference number here.</li><li>A cashier verifies your payment.</li><li>Your official receipt is emailed and appears under Payments & receipts.</li></ol></div></section>
       <section class="panel"><div class="panel-head"><h3>Where to pay</h3></div><ul class="mini-list">
         <li><span>GCash</span><span>${esc(PAY_INFO.gcash)}</span></li><li><span>Bank</span><span>${esc(PAY_INFO.bank)}</span></li><li><span>In person</span><span>${esc(PAY_INFO.counter)}</span></li></ul></section>
     </div></div>
