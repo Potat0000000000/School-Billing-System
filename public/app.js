@@ -690,8 +690,7 @@ const termPicker = (w) => `<label class="field"><span>Student</span>
   <div id="tl${w}" class="ta-list hidden"></div></div></label>`;
 
 VIEWS.terminal = async function () {
-  const isAdmin = me.role === 'admin';
-  const [s, m, regs] = await Promise.all([api('/api/staff/stats'), api('/api/meta'), isAdmin ? api('/api/staff/registrations') : Promise.resolve({ users: [] })]);
+  const [s, m] = await Promise.all([api('/api/staff/stats'), api('/api/meta')]);
   S.meta = m;
   S.badges = { pay: s.pending_payments, reg: s.pending_registrations };
   renderNav();
@@ -703,7 +702,6 @@ VIEWS.terminal = async function () {
       <div class="kpi ok"><span>Collected today</span><strong id="tkToday">${peso(s.collected_today)}</strong><small class="muted" id="tkCount">${s.transactions_today} transaction${s.transactions_today === 1 ? '' : 's'}</small></div>
       <div class="kpi bad"><span>Total outstanding balance</span><strong id="tkOut">${peso(s.outstanding)}</strong><small class="muted" id="tkOver">${s.overdue_bills} overdue bill${s.overdue_bills === 1 ? '' : 's'}</small></div>
       <div class="kpi click" onclick="go('${review}')" title="Review student-submitted payments"><span>Awaiting verification</span><strong id="tkPend">${s.pending_payments}</strong><small class="muted">student payments · review</small></div>
-      ${isAdmin ? `<div class="kpi click" onclick="$('termRegs').scrollIntoView({ behavior: 'smooth' })"><span>New registrations</span><strong id="tkReg">${s.pending_registrations}</strong><small class="muted">to approve</small></div>` : ''}
     </div>
 
     <div class="term-split">
@@ -736,15 +734,7 @@ VIEWS.terminal = async function () {
           <div id="tpBox"><p class="muted">Pick a student to see their unpaid bills and take a payment.</p></div>
         </div>
       </section>
-    </div>
-
-    ${isAdmin ? `<section class="panel" id="termRegs">
-      <div class="panel-head"><div><h3>Pending account registrations</h3><p>Verify the student is enrolled before approving.</p></div></div>
-      <div class="table-wrap"><table><thead><tr><th>Student ID</th><th>Name</th><th>Email</th><th>Year</th><th>Registered</th><th></th></tr></thead>
-      <tbody>${regs.users.length ? regs.users.map((u) => `<tr><td>${esc(u.student_or_emp_id)}</td><td>${esc(u.full_name)}</td><td>${esc(u.email)}</td><td>${u.year_level || '—'}</td><td>${fmtDT(u.created_at)}</td>
-        <td class="right"><div class="row-actions" style="justify-content:flex-end"><button class="btn sm primary" onclick="setReg(${u.user_id},'approved')">Approve</button><button class="btn sm danger" onclick="setReg(${u.user_id},'rejected')">Reject</button></div></td></tr>`).join('')
-        : `<tr><td colspan="6" class="empty">No pending student registrations.</td></tr>`}</tbody></table></div>
-    </section>` : ''}`);
+    </div>`);
   if (S.acct) loadTermStudent(S.acct);
 };
 
@@ -1115,7 +1105,7 @@ const userChip = (s) => ({ approved: '<span class="chip ok">Active</span>', pend
 
 VIEWS.users = function () {
   setView(`<section class="panel">
-    <div class="panel-head"><div><h3>Users & staff</h3><p>Create cashier or admin accounts, reset passwords, and deactivate accounts.</p></div><div class="row-actions"><button class="btn" onclick="openTestEmail()">Send test email</button><button class="btn primary" onclick="openStaffForm()">Add staff account</button></div></div>
+    <div class="panel-head"><div><h3>Users & staff</h3><p>Create cashier or admin accounts, reset passwords, and deactivate accounts.</p></div><button class="btn primary" onclick="openStaffForm()">Add staff account</button></div>
     <form class="filters" onsubmit="event.preventDefault();loadUsers()">
       <label class="field"><span>Role</span><select id="uRole" onchange="loadUsers()"><option value="">Everyone</option><option value="student">Students</option><option value="cashier">Cashiers</option><option value="admin">Admins</option></select></label>
       <label class="field" style="flex:2"><span>Search</span><input id="uQ" placeholder="Name, ID or email" /></label>
@@ -1136,21 +1126,6 @@ async function loadUsers() {
         ${u.user_id !== me.user_id && u.status === 'rejected' ? `<button class="btn sm" onclick="setUserStatus(${u.user_id},'approved')">Activate</button>` : ''}</div></td></tr>`).join('')
       : `<tr><td colspan="6" class="empty">No users found.</td></tr>`}</tbody></table></div>`;
 }
-function openTestEmail() {
-  openModal({
-    title: 'Send test email',
-    body: `<p class="muted">Checks that the Gmail settings work. If it fails, the exact reason is shown.</p>
-      <form onsubmit="submitForm(event, doTestEmail)">
-        <label class="field"><span>Send to</span><input name="to" type="email" value="${esc(me.email || '')}" placeholder="you@gmail.com" required /></label>
-        ${formFoot('Send test')}</form>`
-  });
-}
-async function doTestEmail(fd) {
-  const r = await post('/api/admin/test-email', { to: fd.get('to') });
-  closeModal();
-  toast(r.message);
-}
-
 function openStaffForm() {
   openModal({
     title: 'Add staff account',

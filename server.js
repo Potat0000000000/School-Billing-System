@@ -536,28 +536,6 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   }
 });
 
-// Admin check that Gmail sending works. Shows the real error so setup problems are easy to find.
-app.post('/api/admin/test-email', ...adminOnly, async (req, res) => {
-  if (!transporter) {
-    return res.status(400).json({ success: false, error: 'EMAIL_USER and EMAIL_PASS are not set for Production in Vercel. Add them, then redeploy.' });
-  }
-  try {
-    let to = String(req.body.to || '').trim();
-    if (!to) to = (await db.query(`SELECT email FROM users WHERE user_id = $1`, [req.user.user_id])).rows[0]?.email;
-    if (!to) return res.status(400).json({ success: false, error: 'Enter an email address to send the test to.' });
-    await transporter.sendMail({
-      from: `"TCC Billing Office" <${process.env.EMAIL_USER}>`,
-      to,
-      subject: 'TCC Billing test email',
-      text: 'This is a test email from the TCC Billing System. Email sending works.'
-    });
-    res.json({ success: true, message: `Test email sent to ${to}. Check the inbox and the spam folder.` });
-  } catch (err) {
-    console.error('Test email error:', err.message);
-    res.status(500).json({ success: false, error: 'Email failed: ' + err.message });
-  }
-});
-
 app.post('/api/auth/reset-password', async (req, res) => {
   const { token, new_password } = req.body;
   if (!token || typeof token !== 'string') return res.status(400).json({ success: false, error: 'This reset link is not valid.' });
@@ -1331,4 +1309,4 @@ if (require.main === module) {
   app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
 }
 
-module.exports = app;
+module.exports = app; 
