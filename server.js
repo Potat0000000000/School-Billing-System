@@ -460,6 +460,41 @@ async function sendResetEmail(to, name, link) {
   }
 }
 
+// Tells a new student whether the Business Office approved or rejected their registration
+async function sendAccountDecisionEmail(to, name, studentNo, approved) {
+  if (!transporter || !to) return false;
+  const link = appBase();
+  const body = approved
+    ? `<p>Hi <strong>${esc(name)}</strong>,</p>
+       <p>Good news! Your Torres Capitol College Billing account has been <strong style="color:#16794a">approved</strong>.</p>
+       <p>You can now sign in with your Student ID <strong>${esc(studentNo)}</strong> (or this email) and the password you created. Inside you can see your assessment of fees, your balance, submit payments and download official receipts.</p>
+       <p style="margin:24px 0"><a href="${esc(link)}" style="background:#0e2238;color:#fff;text-decoration:none;padding:12px 22px;border-radius:6px;display:inline-block">Sign in to view my bills</a></p>
+       <p style="font-size:12px;color:#64707f">If the button does not work, copy this link into your browser:<br>${esc(link)}</p>`
+    : `<p>Hi <strong>${esc(name)}</strong>,</p>
+       <p>Your registration for the Torres Capitol College Billing System was <strong style="color:#b3261e">not approved</strong>.</p>
+       <p>Please visit the Business Office (Mon–Fri, 8:00 AM–5:00 PM) with your school ID so they can check your details. You can register again afterwards.</p>`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;border:1px solid #e3e6eb;border-radius:8px;overflow:hidden">
+      <div style="background:#0e2238;color:#fff;padding:20px 24px">
+        <div style="font-size:18px;font-weight:bold">Torres Capitol College</div>
+        <div style="font-size:13px;opacity:.8">Billing & Payments · Account ${approved ? 'approved' : 'update'}</div>
+      </div>
+      <div style="padding:24px;font-size:14px;line-height:1.5;color:#1a2533">${body}</div>
+    </div>`;
+  try {
+    await transporter.sendMail({
+      from: `"TCC Billing Office" <${process.env.EMAIL_USER}>`,
+      to,
+      subject: approved ? 'Your TCC Billing account is approved' : 'Update on your TCC Billing registration',
+      html
+    });
+    return true;
+  } catch (err) {
+    console.error('Account decision email error:', err.message);
+    return false;
+  }
+}
+
 app.post('/api/auth/forgot-password', async (req, res) => {
   const loginId = String(req.body.identifier || '').trim();
   if (!loginId) return res.status(400).json({ success: false, error: 'Enter your Student ID or email.' });
@@ -486,15 +521,40 @@ app.post('/api/auth/forgot-password', async (req, res) => {
           `INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, now() + interval '${RESET_MINUTES} minutes')`,
           [u.user_id, sha256(raw)]
         );
-        await sendResetEmail(u.email, u.full_name, `${appBase()}/?reset=${raw}`);
+        const sent = await sendResetEmail(u.email, u.full_name, `${appBase()}/?reset=${raw}`);
+        if (!sent) console.error(`Reset email was NOT delivered to ${u.email}. Check EMAIL_USER / EMAIL_PASS.`);
         await audit(u.user_id, 'password.reset_request', 'Requested a password reset link');
       }
+    } else {
+      console.log('Forgot password: no approved account matches that Student ID / email.');
     }
     // Same answer whether or not the account exists, so this can't be used to find valid IDs.
     res.json({ success: true, message: RESET_SENT_MSG });
   } catch (err) {
     console.error('Forgot password error:', err);
     fail(res, err);
+  }
+});
+
+// Admin check that Gmail sending works. Shows the real error so setup problems are easy to find.
+app.post('/api/admin/test-email', ...adminOnly, async (req, res) => {
+  if (!transporter) {
+    return res.status(400).json({ success: false, error: 'EMAIL_USER and EMAIL_PASS are not set for Production in Vercel. Add them, then redeploy.' });
+  }
+  try {
+    let to = String(req.body.to || '').trim();
+    if (!to) to = (await db.query(`SELECT email FROM users WHERE user_id = $1`, [req.user.user_id])).rows[0]?.email;
+    if (!to) return res.status(400).json({ success: false, error: 'Enter an email address to send the test to.' });
+    await transporter.sendMail({
+      from: `"TCC Billing Office" <${process.env.EMAIL_USER}>`,
+      to,
+      subject: 'TCC Billing test email',
+      text: 'This is a test email from the TCC Billing System. Email sending works.'
+    });
+    res.json({ success: true, message: `Test email sent to ${to}. Check the inbox and the spam folder.` });
+  } catch (err) {
+    console.error('Test email error:', err.message);
+    res.status(500).json({ success: false, error: 'Email failed: ' + err.message });
   }
 });
 
@@ -937,7 +997,7 @@ app.post('/api/staff/registrations/:id', ...staff, async (req, res) => {
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ success: false, error: 'Invalid status.' });
   try {
     const r = await db.query(
-      `UPDATE users SET status = $1 WHERE user_id = $2 AND role = 'student' AND status = 'pending' RETURNING full_name`,
+      `UPDATE users SET status = $1 WHERE user_id = $2 AND role = 'student' AND status = 'pending' RETURNING full_name, email, student_or_emp_id`,
       [status, req.params.id]
     );
     if (!r.rows.length) return res.status(400).json({ success: false, error: 'Registration not found or already handled.' });
@@ -949,7 +1009,12 @@ app.post('/api/staff/registrations/:id', ...staff, async (req, res) => {
       );
     }
     await audit(req.user.user_id, `registration.${status}`, r.rows[0].full_name);
-    res.json({ success: true, message: `Registration ${status}.` });
+    const u = r.rows[0];
+    const emailed = await sendAccountDecisionEmail(u.email, u.full_name, u.student_or_emp_id, status === 'approved');
+    res.json({
+      success: true,
+      message: `Registration ${status}. ` + (emailed ? `An email was sent to ${u.email}.` : 'No email was sent (email is not set up or failed).')
+    });
   } catch (err) {
     fail(res, err);
   }
